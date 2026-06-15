@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>04 · Coolant reference</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<hr class="spectrum">
+<div class="wrap">
+  <nav class="crumbs"><a href="index.html">Tutorials</a> / 04 — Coolant reference</nav>
+  <header class="site" style="padding-top:14px">
+    <p class="eyebrow">Tutorial 04 · Fluids</p>
+    <h1>Coolant reference</h1>
+    <p class="lead">From water through thickening oils to liquid metals — what each fluid offers, what it costs you, and a single number that ranks them for forced-convection cooling.</p>
+  </header>
+
+  <h2>How to read a coolant</h2>
+  <p>Five numbers decide a single-phase coolant's fate. You want high volumetric heat capacity ρc<sub>p</sub> to carry heat away, high conductivity k to feed the boundary layer, and low viscosity μ so it moves cheaply and turns turbulent easily — plus a wide liquid range (low freezing, high boiling) and the right electrical behaviour.</p>
+  <p>The Prandtl number bundles the fluid's transport character, and the Mouromtseff number bundles the whole lot into one figure of merit for turbulent forced convection — higher is better:</p>
+  <div class="eq">Pr = μ·c<sub>p</sub> / k &nbsp;&nbsp;|&nbsp;&nbsp; Mo = ρ<sup>0.8</sup>·k<sup>0.6</sup>·c<sub>p</sub><sup>0.4</sup> / μ<sup>0.4</sup> &nbsp;&nbsp;<span class="lab">Mo shown relative to water = 100</span></div>
+
+  <div class="filters" id="filters">
+    <span class="small muted" style="margin-right:4px">Show:</span>
+    <button class="chip on" data-f="all">All</button>
+    <button class="chip" data-f="water">Water-based</button>
+    <button class="chip" data-f="glycol">Glycols</button>
+    <button class="chip" data-f="oil">Oils</button>
+    <button class="chip" data-f="dielectric">Dielectrics</button>
+    <button class="chip" data-f="metal">Liquid metals</button>
+  </div>
+
+  <p class="small muted">Tap any column to sort. Defaults to figure of merit, best first.</p>
+  <div class="tablewrap">
+    <table class="dtable" id="ctable">
+      <thead><tr>
+        <th class="name" data-k="name" data-t="s">Coolant</th>
+        <th class="num" data-k="rho" data-t="n">ρ</th>
+        <th class="num" data-k="cp" data-t="n">c<sub>p</sub></th>
+        <th class="num" data-k="k" data-t="n">k</th>
+        <th class="num" data-k="muc" data-t="n">μ (cP)</th>
+        <th class="num" data-k="pr" data-t="n">Pr</th>
+        <th class="num" data-k="bp" data-t="n">BP °C</th>
+        <th class="num" data-k="fp" data-t="n">FP °C</th>
+        <th class="no-sort">Dielectric</th>
+        <th class="num" data-k="mo" data-t="n">Mo (rel.)</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <p class="note" id="usenote"></p>
+
+  <h2>Why viscosity matters so much</h2>
+  <p>The oils make the point. A 5 cSt silicone oil and a 1000 cSt silicone oil are chemically almost the same fluid, but sort the table by μ and you'll see the heavy grade collapses down the figure of merit. High viscosity thickens the boundary layer, suppresses turbulence (Reynolds number falls), and demands far more pumping power for the same flow. That is the central reason water — thin, conductive, high-capacity — beats almost everything that isn't a metal.</p>
+
+  <h2>Choosing a coolant</h2>
+  <div class="callout"><p class="ct">Raw performance</p><p style="margin:0">Water, every time, where you can tolerate it. Nothing non-metallic competes on ρc<sub>p</sub> and k together.</p></div>
+  <div class="callout"><p class="ct">Freeze / boil protection</p><p style="margin:0">Water–glycol mixes trade some capacity and a lot of viscosity for a liquid range from roughly −37 °C upward. Propylene glycol where toxicity matters.</p></div>
+  <div class="callout"><p class="ct">Electrical safety / immersion</p><p style="margin:0">Dielectric fluids (fluorocarbons, hydrofluoroethers) or oils (mineral, PAO, silicone) can touch live electronics. You pay with much lower thermal performance, so designs lean on huge surface area or two-phase boiling.</p></div>
+  <div class="callout"><p class="ct">Ultra-high heat flux</p><p style="margin:0">Liquid metals (galinstan, NaK, sodium) have conductivities ten to a hundred times any other liquid and top the figure of merit — at the price of weight, cost, electrical conductivity, and in the alkali metals, violent reactivity.</p></div>
+  <div class="callout"><p class="ct">Two-phase</p><p style="margin:0">A low-boiling-point dielectric (FC-72, HFE-7100) or a refrigerant lets you exploit latent heat near a fixed temperature — bounded by critical heat flux (tutorial 06).</p></div>
+
+  <footer class="site"><a href="03-interfaces.html">← Interfaces</a> &nbsp;·&nbsp; <a href="01-liquid-cooling.html">Try it in the test bench →</a></footer>
+</div>
+
+<script src="coolants.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const moW=window.mouromtseff(window.COOLANTS.find(c=>c.name==='Water'));
+const DATA=window.COOLANTS.map(c=>({...c, muc:c.mu*1000, pr:window.prandtl(c), mo:window.mouromtseff(c)/moW*100}));
+const CATLAB={water:'Water-based',glycol:'Glycol',oil:'Oil',dielectric:'Dielectric',metal:'Liquid metal',gas:'Gas'};
+let filt='all', sort={k:'mo',dir:-1};
+const tb=$('ctable').querySelector('tbody');
+
+function dpill(d){return d===true?'<span class="pill yes">yes</span>':d==='part'?'<span class="pill part">partial</span>':'<span class="pill nope">no</span>';}
+function fmt(v,d){return v===null?'—':(d===0?Math.round(v).toLocaleString():v.toFixed(d));}
+
+function paint(){
+ let rows=DATA.filter(c=>filt==='all'?true:filt==='water'?c.cat==='water':c.cat===filt);
+ rows.sort((a,b)=>{const A=a[sort.k],B=b[sort.k];
+   if(A===null)return 1; if(B===null)return -1;
+   return (typeof A==='string'?A.localeCompare(B):A-B)*sort.dir;});
+ tb.innerHTML=rows.map(c=>`<tr>
+   <td class="name">${c.name}<br><span class="pill">${CATLAB[c.cat]}</span></td>
+   <td class="num">${fmt(c.rho,0)}</td><td class="num">${fmt(c.cp,0)}</td>
+   <td class="num">${c.k.toFixed(3)}</td><td class="num">${fmt(c.muc,c.muc>=10?0:2)}</td>
+   <td class="num">${fmt(c.pr,c.pr>=100?0:1)}</td>
+   <td class="num">${fmt(c.bp,0)}</td><td class="num">${fmt(c.fp,0)}</td>
+   <td>${dpill(c.diel)}</td><td class="num">${fmt(c.mo,0)}</td></tr>`).join('');
+ $('ctable').querySelectorAll('th[data-k]').forEach(th=>{th.classList.remove('sort-asc','sort-desc');
+   if(th.dataset.k===sort.k)th.classList.add(sort.dir>0?'sort-asc':'sort-desc');});
+ const best=[...rows].sort((a,b)=>b.mo-a.mo)[0];
+ $('usenote').textContent=`Highest figure of merit in this view: ${best.name} (${Math.round(best.mo)} vs water 100). ${best.use}`;
+}
+$('ctable').querySelectorAll('th[data-k]').forEach(th=>th.addEventListener('click',()=>{
+ const k=th.dataset.k; if(sort.k===k)sort.dir*=-1; else{sort.k=k;sort.dir=th.dataset.t==='s'?1:-1;} paint();}));
+$('filters').querySelectorAll('.chip').forEach(c=>c.addEventListener('click',()=>{
+ filt=c.dataset.f; $('filters').querySelectorAll('.chip').forEach(x=>x.classList.toggle('on',x===c)); paint();}));
+paint();
+</script>
+</body>
+</html>

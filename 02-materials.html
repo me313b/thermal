@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>02 · Materials &amp; how heat moves</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<hr class="spectrum">
+<div class="wrap">
+  <nav class="crumbs"><a href="index.html">Tutorials</a> / 02 — Materials &amp; how heat moves</nav>
+  <header class="site" style="padding-top:14px">
+    <p class="eyebrow">Tutorial 02 · Foundations</p>
+    <h1>Materials &amp; how heat moves</h1>
+    <p class="lead">Before a coolant ever touches it, heat has to escape the chip by conduction through solids. Which solids, how thick, and how well they touch decides most of the battle.</p>
+  </header>
+
+  <h2>The four properties that matter</h2>
+  <dl class="defs">
+    <dt>k — thermal conductivity (W/m·K)</dt>
+    <dd>How readily a material passes heat through its own body. Copper ≈ 400, aluminium ≈ 240, silicon ≈ 150, stainless steel ≈ 16, water ≈ 0.6, air ≈ 0.026.</dd>
+    <dt>c<sub>p</sub> — specific heat capacity (J/kg·K)</dt>
+    <dd>Energy to raise one kilogram by one kelvin. Governs how much heat a mass can store: Q = m·c<sub>p</sub>·ΔT.</dd>
+    <dt>ρ — density (kg/m³)</dt>
+    <dd>Combine with c<sub>p</sub> to get the volumetric heat capacity ρc<sub>p</sub>, the honest measure of how much heat a given volume holds.</dd>
+    <dt>α — thermal diffusivity (m²/s)</dt>
+    <dd>α = k / (ρ·c<sub>p</sub>). How fast a temperature change spreads, as opposed to how much heat moves. Metals spread fast; water stores instead.</dd>
+  </dl>
+
+  <div class="callout">
+    <p class="ct">Spread vs store</p>
+    <p style="margin:0">Metals conduct through a sea of free electrons, so they have both high k and high α — they move heat fast. Liquids and ceramics lack that electron sea: water has decent storage (huge ρc<sub>p</sub>) but low k, so it is a poor conductor and a fine reservoir. This is exactly why cooling is a relay: a metal carries heat <em>to</em> the coolant, the coolant carries it <em>away</em>.</p>
+  </div>
+
+  <h2>Conduction as resistance</h2>
+  <p>One-dimensional steady conduction follows Fourier's law, and the grouping behaves like an electrical resistance — which lets you stack layers in series:</p>
+  <div class="eq">Q = k·A·ΔT / L &nbsp;&nbsp;→&nbsp;&nbsp; R<sub>cond</sub> = L / (k·A) &nbsp;&nbsp;<span class="lab">ΔT = Q·R</span></div>
+  <p>Two facts fall straight out of that equation. Thin is good (resistance scales with length L), and area is your friend (resistance falls with A). The trap is that a very thin layer of a <em>bad</em> conductor — a film of thermal grease — can out-resist millimetres of copper, because k differs by a hundred-fold. The stack below lets you see that happen.</p>
+
+  <h2>Reference: solids &amp; interface materials</h2>
+  <p class="small muted">Tap a column heading to sort. Values are representative at room temperature.</p>
+  <div class="tablewrap">
+    <table class="dtable" id="mtable">
+      <thead><tr>
+        <th class="name" data-k="name" data-t="s">Material</th>
+        <th class="num" data-k="k" data-t="n">k (W/m·K)</th>
+        <th class="num" data-k="cp" data-t="n">c<sub>p</sub> (J/kg·K)</th>
+        <th class="num" data-k="rho" data-t="n">ρ (kg/m³)</th>
+        <th class="no-sort">Typical role</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <h2>Build a conduction stack</h2>
+  <p>Pick a material and thickness for each layer, set the footprint area and heat load, and read off where the temperature drop accumulates.</p>
+
+  <div class="panel">
+    <div id="layers"></div>
+    <div class="row" style="margin-top:16px">
+      <label for="area">Footprint</label>
+      <input type="range" id="area" min="0.5" max="20" value="4" step="0.5">
+      <span class="val" id="areav">4.0 cm²</span>
+    </div>
+    <div class="row">
+      <label for="qq">Heat load</label>
+      <input type="range" id="qq" min="10" max="400" value="150" step="5">
+      <span class="val" id="qqv">150 W</span>
+    </div>
+
+    <div style="display:flex;align-items:baseline;gap:12px;margin:14px 0 12px;flex-wrap:wrap">
+      <span class="small muted">Total temperature drop across the stack</span>
+      <span class="big" id="dtbig">— °C</span>
+    </div>
+    <div class="track"><div id="sbar" style="display:flex;width:100%;height:100%"></div></div>
+    <div class="ticks"><span>cold side</span><span style="margin-left:auto">hot side (chip)</span></div>
+    <div class="legend" id="slegend"></div>
+    <div class="grid" id="sgrid"></div>
+    <p class="note">Pure 1-D conduction (R = L/kA), no spreading or contact resistance between layers. Real stacks add interface resistance at every boundary — see tutorial 03.</p>
+  </div>
+
+  <h2>Things to try</h2>
+  <p><strong>The grease tax.</strong> Set a thick copper base, then add a 0.05 mm grease layer. That sliver of grease often shows a bigger temperature drop than several millimetres of copper — interface materials, not the metal, usually limit a stack.</p>
+  <p><strong>Diamond vs copper.</strong> Swap a copper spreader for diamond (k ≈ 2000). The drop across it nearly vanishes — which is why diamond and graphite are used as heat spreaders despite the cost.</p>
+  <p><strong>Area beats thickness.</strong> Halve the footprint and watch every layer's drop double. Spreading heat over more area is often cheaper than chasing exotic materials.</p>
+
+  <footer class="site"><a href="index.html">← All tutorials</a> &nbsp;·&nbsp; <a href="03-interfaces.html">Next: Interfaces →</a></footer>
+</div>
+
+<script>
+const MATS={
+ "Copper":401,"Aluminium":237,"Silicon":148,"Diamond":2000,"Graphite sheet":700,
+ "AlN ceramic":170,"Stainless steel":16,"Solder (SAC305)":58,"Liquid-metal TIM":40,
+ "Thermal grease":3,"Thermal pad":1.5
+};
+const MROWS=[
+ ["Diamond",2000,510,3510,"Ultimate spreader; costly"],
+ ["Silver",429,235,10490,"Highest-k metal; expensive"],
+ ["Copper",401,385,8960,"Standard cold-plate & heat-pipe metal"],
+ ["Gold",317,129,19300,"Bond wires, plating"],
+ ["Aluminium",237,897,2700,"Light, cheap heatsinks"],
+ ["AlN ceramic",170,740,3260,"Electrically insulating, thermally conductive"],
+ ["Silicon",148,705,2330,"The chip substrate itself"],
+ ["Graphite sheet (in-plane)",700,710,2200,"Anisotropic spreader"],
+ ["SiC",120,750,3210,"Power-device substrate"],
+ ["Brass",110,380,8500,"Fittings, connectors"],
+ ["Indium",82,233,7310,"Soft solder / TIM"],
+ ["Solder (SAC305)",58,220,7400,"Die-attach layer"],
+ ["Liquid-metal TIM (Ga)",40,300,6400,"Best paste TIM; electrically conductive"],
+ ["Stainless steel 304",16,500,8000,"Structural; a poor conductor"],
+ ["Thermal grease",3,1000,2600,"Common interface filler"],
+ ["Thermal pad",1.5,1000,2000,"Soft, reworkable interface"],
+ ["Water",0.6,4180,997,"For contrast — a liquid"],
+ ["Air",0.026,1005,1.2,"For contrast — a gas"]
+];
+const LAYERS=[
+ {name:"Silicon",mat:"Silicon",L:0.5},
+ {name:"Die attach",mat:"Solder (SAC305)",L:0.1},
+ {name:"Interface (TIM)",mat:"Thermal grease",L:0.05},
+ {name:"Spreader base",mat:"Copper",L:3}
+];
+const COL=["var(--blue)","var(--teal)","var(--amber)","var(--coral)"];
+const $=id=>document.getElementById(id);
+
+const tb=$('mtable').querySelector('tbody');
+let msort={k:'k',dir:-1};
+function paintM(){
+ const rows=[...MROWS].sort((a,b)=>{const i={name:0,k:1,cp:2,rho:3}[msort.k];
+   return (typeof a[i]==='string'? a[i].localeCompare(b[i]) : a[i]-b[i])*msort.dir;});
+ tb.innerHTML=rows.map(r=>`<tr><td class="name">${r[0]}</td><td class="num">${r[1]}</td><td class="num">${r[2]}</td><td class="num">${r[3].toLocaleString()}</td><td>${r[4]}</td></tr>`).join('');
+ $('mtable').querySelectorAll('th[data-k]').forEach(th=>{th.classList.remove('sort-asc','sort-desc');
+   if(th.dataset.k===msort.k)th.classList.add(msort.dir>0?'sort-asc':'sort-desc');});
+}
+$('mtable').querySelectorAll('th[data-k]').forEach(th=>th.addEventListener('click',()=>{
+ const k=th.dataset.k; if(msort.k===k)msort.dir*=-1; else{msort.k=k;msort.dir=th.dataset.t==='s'?1:-1;} paintM();}));
+paintM();
+
+function buildLayers(){
+ const opts=Object.keys(MATS).map(m=>`<option>${m}</option>`).join('');
+ $('layers').innerHTML=LAYERS.map((ly,i)=>`
+  <div class="layerrow">
+    <span class="ll">${ly.name}</span>
+    <select data-i="${i}">${opts}</select>
+    <input type="range" data-i="${i}" min="0.02" max="6" value="${ly.L}" step="0.01">
+    <span class="ll" id="lL${i}">${ly.L.toFixed(2)} mm</span>
+  </div>`).join('');
+ $('layers').querySelectorAll('select').forEach(s=>{s.value=LAYERS[+s.dataset.i].mat;
+   s.addEventListener('change',e=>{LAYERS[+e.target.dataset.i].mat=e.target.value;calc();});});
+ $('layers').querySelectorAll('input').forEach(inp=>inp.addEventListener('input',e=>{
+   const i=+e.target.dataset.i;LAYERS[i].L=+e.target.value;$('lL'+i).textContent=LAYERS[i].L.toFixed(2)+' mm';calc();}));
+}
+function card(l,v){return `<div class="card"><div class="l">${l}</div><div class="v">${v}</div></div>`;}
+
+function calc(){
+ const A=(+$('area').value)/1e4, Q=+$('qq').value;
+ let Rtot=0; const seg=LAYERS.map(ly=>{const k=MATS[ly.mat];const R=(ly.L/1000)/(k*A);Rtot+=R;return {name:ly.name,mat:ly.mat,R};});
+ const dTtot=Q*Rtot;
+ let html='', leg='';
+ seg.forEach((s,i)=>{const dt=Q*s.R;const w=dTtot>0?dt/dTtot*100:0;
+   html+=`<div class="seg" style="width:${w}%;background:${COL[i]}"></div>`;
+   leg+=`<span class="lg"><i style="background:${COL[i]}"></i>${s.name}: ${dt.toFixed(1)}°C</span>`;});
+ $('sbar').innerHTML=html; $('slegend').innerHTML=leg;
+ $('dtbig').textContent=dTtot.toFixed(1)+' °C';
+ const worst=seg.reduce((a,b)=>b.R>a.R?b:a);
+ $('sgrid').innerHTML=card('Total resistance',Rtot.toFixed(3)+' K/W')+card('Total ΔT',dTtot.toFixed(1)+' °C')+
+   card('Dominant layer',worst.name)+card('Its share',(worst.R/Rtot*100).toFixed(0)+' %');
+}
+$('area').addEventListener('input',e=>{$('areav').textContent=(+e.target.value).toFixed(1)+' cm²';calc();});
+$('qq').addEventListener('input',e=>{$('qqv').textContent=e.target.value+' W';calc();});
+buildLayers(); calc();
+</script>
+</body>
+</html>

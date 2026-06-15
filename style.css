@@ -84,3 +84,31 @@ input[type=range]{flex:1;accent-color:var(--info-t)}
 .card .l{font-size:12px;color:var(--ink-2);margin-bottom:3px}
 .card .v{font-size:18px;font-weight:600;font-family:var(--mono);color:var(--ink)}
 .note{font-size:12px;color:var(--ink-3);line-height:1.55;margin:14px 0 0}
+
+.tablewrap{overflow-x:auto;margin:0 0 18px}
+table.dtable{border-collapse:collapse;width:100%;font-size:14px}
+table.dtable th,table.dtable td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+table.dtable th{font-weight:600;color:var(--ink-2);font-size:12px;letter-spacing:.03em;cursor:pointer;user-select:none}
+table.dtable th.no-sort{cursor:default}
+table.dtable td.num,table.dtable th.num{text-align:right;font-family:var(--mono)}
+table.dtable td.name{white-space:normal;min-width:160px}
+table.dtable tbody tr:hover{background:var(--surface-2)}
+th.sort-asc::after{content:'\25B2';font-size:9px;margin-left:5px;color:var(--ink-3)}
+th.sort-desc::after{content:'\25BC';font-size:9px;margin-left:5px;color:var(--ink-3)}
+.pill{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:6px;background:var(--surface-2);color:var(--ink-2);white-space:nowrap;display:inline-block}
+.pill.yes{background:var(--ok-bg);color:var(--ok-t)}
+.pill.nope{background:var(--bad-bg);color:var(--bad-t)}
+.pill.part{background:var(--warn-bg);color:var(--warn-t)}
+.callout{background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:0 0 18px}
+.callout .ct{font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin:0 0 6px}
+.callout p:last-child{margin-bottom:0}
+dl.defs{margin:0 0 18px}
+dl.defs dt{font-weight:600;margin-top:14px;font-family:var(--mono);font-size:15px}
+dl.defs dd{margin:3px 0 0;color:var(--ink-2)}
+.filters{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 16px;align-items:center}
+.layerrow{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.layerrow select{flex:2;min-width:0}
+.layerrow input[type=range]{flex:3}
+.layerrow .ll{font-family:var(--mono);font-size:12px;color:var(--ink-3);min-width:62px;text-align:right}
+select{font-family:var(--sans);font-size:14px;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink)}
+.section-eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);margin:36px 0 4px;padding-top:8px;border-top:1px solid var(--line)}

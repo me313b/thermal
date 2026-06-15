@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>03 · Interfaces &amp; boundary conditions</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<hr class="spectrum">
+<div class="wrap">
+  <nav class="crumbs"><a href="index.html">Tutorials</a> / 03 — Interfaces &amp; boundary conditions</nav>
+  <header class="site" style="padding-top:14px">
+    <p class="eyebrow">Tutorial 03 · Foundations</p>
+    <h1>Interfaces &amp; boundary conditions</h1>
+    <p class="lead">Heat always has to cross boundaries — metal to metal, metal to liquid. These crossings are where most of a design's temperature is won or lost, and where the maths gets its rules.</p>
+  </header>
+
+  <h2>The three boundary conditions</h2>
+  <p>Any conduction problem needs to know what happens at its edges. There are three ways to state it, and almost every real surface is one of them:</p>
+  <dl class="defs">
+    <dt>Dirichlet — prescribed temperature</dt>
+    <dd>The surface is held at a fixed T. Example: a wall touching a large boiling pool stays near the saturation temperature.</dd>
+    <dt>Neumann — prescribed heat flux</dt>
+    <dd>A fixed q″ enters the surface. Example: a chip dumping a known wattage over a known area. A perfectly insulated edge is the special case q″ = 0.</dd>
+    <dt>Robin — convective (the one liquid cooling lives in)</dt>
+    <dd>The flux leaving the surface is set by convection to the fluid: q″ = h·(T<sub>s</sub> − T<sub>f</sub>). Both the surface temperature and the flux are unknown until you solve it; h ties them together.</dd>
+  </dl>
+  <div class="eq">Dirichlet: T<sub>s</sub> = T<sub>0</sub> &nbsp;&nbsp;|&nbsp;&nbsp; Neumann: −k·(dT/dx) = q″ &nbsp;&nbsp;|&nbsp;&nbsp; Robin: −k·(dT/dx) = h·(T<sub>s</sub> − T<sub>f</sub>)</div>
+
+  <h2>The metal–liquid boundary up close</h2>
+  <p>Right at a wall the fluid does not move — the no-slip condition. So a thin, nearly stationary film clings to the surface, and heat has to <em>conduct</em> across it before the bulk flow can carry it off. The thickness of that thermal boundary layer is what really sets the heat transfer coefficient h: thin layer, high h. Anything that thins it — faster flow, turbulence, smaller channels — improves cooling.</p>
+
+  <div class="svgwrap">
+  <svg width="100%" viewBox="0 0 680 260" role="img" aria-label="Diagram of a heated wall with a thermal boundary layer in the flowing fluid">
+    <rect x="40" y="40" width="60" height="180" rx="6" fill="var(--coral)" opacity="0.85"/>
+    <text x="70" y="235" text-anchor="middle" font-size="12" font-family="var(--mono)" fill="var(--ink-2)">wall</text>
+    <rect id="bl" x="100" y="40" width="120" height="180" fill="var(--amber)" opacity="0.18"/>
+    <line id="bledge" x1="220" y1="40" x2="220" y2="220" stroke="var(--amber)" stroke-width="1" stroke-dasharray="4 4"/>
+    <text id="bllab" x="160" y="32" text-anchor="middle" font-size="12" font-family="var(--mono)" fill="var(--ink-3)">boundary layer δ</text>
+    <g stroke="var(--blue)" stroke-width="2" fill="none" opacity="0.7">
+      <line x1="250" y1="70" x2="330" y2="70" marker-end="url(#a)"/>
+      <line x1="250" y1="110" x2="350" y2="110" marker-end="url(#a)"/>
+      <line x1="250" y1="150" x2="350" y2="150" marker-end="url(#a)"/>
+      <line x1="250" y1="190" x2="330" y2="190" marker-end="url(#a)"/>
+    </g>
+    <text x="430" y="135" font-size="13" font-family="var(--mono)" fill="var(--ink-2)">bulk flow (T_f)</text>
+    <defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M2 1L8 5L2 9" fill="none" stroke="var(--blue)" stroke-width="1.5"/></marker></defs>
+  </svg>
+  </div>
+
+  <h2>Try the convective boundary condition</h2>
+  <p>Set the heat transfer coefficient and the flux. The surface temperature follows directly from the Robin condition, and the boundary layer in the diagram above thins as h rises.</p>
+
+  <div class="panel">
+    <div class="row">
+      <label for="h">h (W/m²·K)</label>
+      <input type="range" id="h" min="100" max="40000" value="3000" step="100">
+      <span class="val" id="hv">3000</span>
+    </div>
+    <div class="row">
+      <label for="qf">Heat flux</label>
+      <input type="range" id="qf" min="1" max="120" value="30" step="1">
+      <span class="val" id="qfv">30 W/cm²</span>
+    </div>
+    <div style="display:flex;align-items:baseline;gap:12px;margin:14px 0 6px;flex-wrap:wrap">
+      <span class="small muted">Surface temperature (fluid at 40 °C)</span>
+      <span class="big" id="tsbig">— °C</span>
+      <span class="statuspill" id="tsst"></span>
+    </div>
+    <div class="grid" id="hgrid" style="margin-top:10px"></div>
+    <p class="note">T<sub>s</sub> = T<sub>f</sub> + q″ / h. The boundary-layer thickness shown is illustrative (δ falls as h rises); exact δ depends on the flow and fluid.</p>
+  </div>
+
+  <h2>Metal–metal: thermal contact resistance</h2>
+  <p>Two "flat" surfaces pressed together actually touch only at scattered high points; the rest is air-filled gaps. Heat must funnel through those tiny contact spots, adding a contact resistance R<sub>c</sub> that has nothing to do with either metal's bulk conductivity. This is why every joint gets a thermal interface material (TIM) — grease, pad, phase-change, or liquid metal — to flood the gaps with something better than air.</p>
+  <div class="callout">
+    <p class="ct">The bondline tradeoff</p>
+    <p style="margin:0">A TIM layer has resistance R = BLT / (k·A), so you want it <em>thin</em> (small bondline thickness). But squeeze too hard chasing a thin line and you risk pump-out, dry spots, and cracked dies. Real designs settle at the thinnest bondline that stays reliable — then pick the highest-k TIM the application allows. Liquid-metal TIMs reach k ≈ 40–70 but conduct electricity, so they need containment.</p>
+  </div>
+
+  <h2>One number to keep: the Biot number</h2>
+  <p>The Biot number compares internal conduction resistance to surface convection resistance and tells you whether an object cools uniformly or with a steep internal gradient:</p>
+  <div class="eq">Bi = h·L<sub>c</sub> / k<sub>solid</sub> &nbsp;&nbsp;<span class="lab">Bi ≪ 1: nearly uniform · Bi ≫ 1: surface much cooler than core</span></div>
+  <p>Small Bi (a thin copper fin) means the whole part is essentially one temperature — convenient. Large Bi (a thick low-conductivity block under aggressive cooling) means the surface races ahead of the interior and you must treat the temperature as a field, not a single value.</p>
+
+  <footer class="site"><a href="02-materials.html">← Materials</a> &nbsp;·&nbsp; <a href="04-coolants.html">Next: Coolant reference →</a></footer>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+function card(l,v){return `<div class="card"><div class="l">${l}</div><div class="v">${v}</div></div>`;}
+function calc(){
+ const h=+$('h').value, qf=+$('qf').value, Tf=40;
+ const Ts=Tf+(qf*1e4)/h;
+ const w=Math.max(4,Math.min(140,40000/h));
+ $('bl').setAttribute('width',w);
+ $('bledge').setAttribute('x1',100+w); $('bledge').setAttribute('x2',100+w);
+ $('bllab').setAttribute('x',100+w/2);
+ let st,col;
+ if(Ts>=100){st='Over limit';col='bad';}else if(Ts>=85){st='Hot';col='warn';}else{st='Safe';col='ok';}
+ const big=$('tsbig'); big.textContent=Ts.toFixed(0)+' °C'; big.style.color='var(--'+col+'-t)';
+ const s=$('tsst'); s.textContent=st; s.style.color='var(--'+col+'-t)'; s.style.background='var(--'+col+'-bg)';
+ $('hgrid').innerHTML=card('Surface temp',Ts.toFixed(1)+' °C')+card('Surface–fluid ΔT',(Ts-Tf).toFixed(1)+' °C')+
+   card('Convective resistance','1/(h·A)')+card('Boundary layer',h>8000?'thin':h>1500?'moderate':'thick');
+}
+$('h').addEventListener('input',e=>{$('hv').textContent=e.target.value;calc();});
+$('qf').addEventListener('input',e=>{$('qfv').textContent=e.target.value+' W/cm²';calc();});
+calc();
+</script>
+</body>
+</html>
