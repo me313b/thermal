@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>01 · Liquid cooling test bench</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<hr class="spectrum">
+<div class="wrap">
+  <nav class="crumbs"><a href="index.html">Tutorials</a> / 01 — Liquid cooling test bench</nav>
+  <header class="site" style="padding-top:14px">
+    <p class="eyebrow">Tutorial 01</p>
+    <h1>Liquid cooling test bench</h1>
+    <p class="lead">Liquid cooling is a relay race: heat conducts out of the chip, convects into the moving coolant, then rides away with the flow. This page lets you change the players and watch the finish-line temperature.</p>
+  </header>
+
+  <h2>The model in three equations</h2>
+  <p>The coolant warms as it absorbs the heat load — sensible heating governed by its mass flow and heat capacity:</p>
+  <div class="eq">&Delta;T<sub>coolant</sub> = Q / (ṁ · c<sub>p</sub>) &nbsp;&nbsp;<span class="lab">ṁ = &rho; · V̇</span></div>
+  <p>Heat crossing the wall into the fluid meets a convective resistance set by the heat transfer coefficient and wetted area; the coefficient itself comes from the flow through the Nusselt number:</p>
+  <div class="eq">R<sub>conv</sub> = 1 / (h · A) &nbsp;&nbsp; h = Nu · k / D &nbsp;&nbsp;<span class="lab">turbulent: Nu = 0.023·Re^0.8·Pr^0.4</span></div>
+  <p>Stack the resistances in series — package, base conduction, convection — and add the coolant's own rise to get the junction temperature:</p>
+  <div class="eq">T<sub>j</sub> = T<sub>inlet</sub> + Q·(R<sub>jc</sub> + R<sub>cond</sub> + R<sub>conv</sub>) + &Delta;T<sub>coolant</sub>/2</div>
+
+  <h2>Run it</h2>
+
+  <div class="panel">
+    <div id="chips" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px">
+      <button class="chip on" data-k="water">Water · single-phase</button>
+      <button class="chip" data-k="glycol">Water–glycol · single-phase</button>
+      <button class="chip" data-k="diel">Dielectric · single-phase</button>
+      <button class="chip" data-k="tp_diel">Two-phase · dielectric</button>
+      <button class="chip" data-k="tp_water">Two-phase · water</button>
+    </div>
+
+    <div class="row">
+      <label for="q">Heat load</label>
+      <input type="range" id="q" min="10" max="500" value="150" step="5">
+      <span class="val" id="qv">150 W</span>
+    </div>
+    <div class="row" id="frow">
+      <label for="f">Flow rate</label>
+      <input type="range" id="f" min="0.2" max="5" value="1" step="0.1">
+      <span class="val" id="fv">1.0 L/min</span>
+    </div>
+    <div id="fhint" class="small" style="color:var(--ink-3);margin:-4px 0 16px;min-height:16px"></div>
+
+    <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:12px;flex-wrap:wrap">
+      <span class="small muted">Junction temperature</span>
+      <span class="big" id="big">63 &deg;C</span>
+      <span class="statuspill" id="status">Safe</span>
+    </div>
+
+    <div class="track">
+      <div id="bar" style="display:flex;width:100%;height:100%"></div>
+      <div style="position:absolute;top:0;left:53.1%;height:100%;width:1px;background:var(--ink-2);opacity:.5"></div>
+      <div style="position:absolute;top:0;left:62.5%;height:100%;width:1px;background:var(--red);opacity:.7"></div>
+    </div>
+    <div class="ticks"><span>inlet</span><span style="margin-left:auto;margin-right:6%">85&deg; limit</span><span>100&deg; · scale 0–160&deg;C</span></div>
+    <div class="legend" id="legend"></div>
+
+    <div class="grid" id="grid"></div>
+
+    <p class="note">Simplified educational model: representative coolant properties and a fixed cold-plate geometry. Single-phase uses Fourier conduction plus a Nusselt correlation (laminar Nu = 4.36, turbulent Dittus–Boelter); two-phase uses critical-heat-flux limits. Illustrative, not a design tool.</p>
+  </div>
+
+  <h2>Three things to try</h2>
+  <p><strong>Cross into turbulence.</strong> On water, raise the flow from 1 toward 4 L/min. Around Re&nbsp;≈&nbsp;2300 the regime flips to turbulent, the heat transfer coefficient jumps, and the junction temperature falls — but each extra litre buys less than the last.</p>
+  <p><strong>Starve the convection.</strong> Switch to dielectric single-phase at the same settings. Its low conductivity inflates the convective resistance and the junction temperature climbs hard — which is exactly why dielectrics are rarely used in plain single-phase cold plates.</p>
+  <p><strong>Find the cliff.</strong> Flip that dielectric to two-phase. The flow slider greys out — pool boiling is limited by critical heat flux, not flow. Push the heat load until “CHF used” passes 100% and the surface temperature spikes off the boiling curve into burnout.</p>
+
+  <footer class="site">
+    <a href="index.html">← All tutorials</a>
+  </footer>
+</div>
+
+<script>
+const M={
+ water:{label:'Water',mode:'single',rho:1000,cp:4180,k:0.6,mu:0.0008,tsat:100},
+ glycol:{label:'Water–glycol',mode:'single',rho:1070,cp:3300,k:0.37,mu:0.0034,tsat:107},
+ diel:{label:'Dielectric (FC-72)',mode:'single',rho:1680,cp:1100,k:0.057,mu:0.00064,tsat:56},
+ tp_diel:{label:'Two-phase dielectric',mode:'two',rho:1680,cp:1100,k:0.057,mu:0.00064,tsat:56,chf:150000},
+ tp_water:{label:'Two-phase water',mode:'two',rho:1000,cp:4180,k:0.6,mu:0.0008,tsat:100,chf:1100000}
+};
+const Ac=5e-5,Dh=0.0017,Aw=0.012,Abase=9e-4,Rjc=0.15,Rcond=0.01,Tin=30,SCALE=160;
+const COL={blue:'var(--blue)',teal:'var(--teal)',amber:'var(--amber)',coral:'var(--coral)',red:'var(--red)'};
+const TXT={ok:'--ok-t',warn:'--warn-t',bad:'--bad-t'};
+const BG={ok:'--ok-bg',warn:'--warn-bg',bad:'--bad-bg'};
+let cur='water';
+const $=id=>document.getElementById(id);
+
+function compute(){
+ const m=M[cur],Q=+$('q').value,V=+$('f').value;
+ if(m.mode==='single'){
+  const mdot=m.rho*(V/1000/60);
+  const dT=Q/(mdot*m.cp);
+  const v=(V/1000/60)/Ac;
+  const Re=m.rho*v*Dh/m.mu;
+  const Pr=m.mu*m.cp/m.k;
+  let Nu,regime;
+  if(Re<2300){Nu=4.36;regime='Laminar';}else{Nu=0.023*Math.pow(Re,0.8)*Math.pow(Pr,0.4);regime='Turbulent';}
+  const h=Nu*m.k/Dh, Rconv=1/(h*Aw);
+  const sc=dT,sv=Q*Rconv,sd=Q*Rcond,sp=Q*Rjc, Tj=Tin+sc+sv+sd+sp;
+  return {mode:'single',Tj,base:Tin,dT,Re,regime,h,Rconv,
+   segs:[['Coolant rise',sc,'blue'],['Convection',sv,'teal'],['Conduction',sd,'amber'],['Package',sp,'coral']]};
+ }else{
+  const qf=Q/Abase, margin=qf/m.chf;
+  let sh,burn=false;
+  if(margin<1){sh=8+22*margin;}else{sh=400;burn=true;}
+  const Twall=m.tsat+sh, sd=Q*Rcond, sp=Q*Rjc, Tj=Twall+sd+sp;
+  return {mode:'two',Tj,base:m.tsat,qflux:qf/1e4,chf:m.chf/1e4,margin,Twall,burn,
+   segs:[['Superheat',sh,'red'],['Conduction',sd,'amber'],['Package',sp,'coral']]};
+ }
+}
+function card(l,v){return '<div class="card"><div class="l">'+l+'</div><div class="v">'+v+'</div></div>';}
+
+function render(){
+ const o=compute();
+ let html='',cum=0;
+ const bw=Math.min(o.base/SCALE*100,100);
+ html+='<div class="seg" style="width:'+bw+'%;background:var(--seg-base)"></div>';cum=bw;
+ o.segs.forEach(s=>{let w=s[1]/SCALE*100;if(cum+w>100)w=Math.max(0,100-cum);cum+=w;
+  html+='<div class="seg" style="width:'+w+'%;background:'+COL[s[2]]+'"></div>';});
+ $('bar').innerHTML=html;
+ $('legend').innerHTML='<span class="lg"><i style="background:var(--seg-base)"></i>Baseline '+o.base.toFixed(0)+'&deg;C</span>'+
+  o.segs.map(s=>'<span class="lg"><i style="background:'+COL[s[2]]+'"></i>'+s[0]+' +'+s[1].toFixed(1)+'&deg;C</span>').join('');
+ let st,col;
+ if(o.mode==='single'){
+  if(o.Tj>=100){st='Over limit';col='bad';}else if(o.Tj>=85){st='Running hot';col='warn';}else{st='Safe';col='ok';}
+  $('grid').innerHTML=card('Coolant temp rise',o.dT.toFixed(1)+' &deg;C')+card('Flow regime',o.regime+' · Re '+o.Re.toFixed(0))+
+   card('Heat transfer coeff',o.h.toFixed(0)+' W/m²K')+card('Convective resistance',o.Rconv.toFixed(3)+' K/W');
+ }else{
+  if(o.burn){st='Burnout — past CHF';col='bad';}else if(o.margin>0.85){st='Near CHF limit';col='warn';}else if(o.Tj>=90){st='Warm';col='warn';}else{st='Safe';col='ok';}
+  $('grid').innerHTML=card('Heat flux',o.qflux.toFixed(1)+' W/cm²')+card('Critical heat flux',o.chf.toFixed(0)+' W/cm²')+
+   card('CHF used',(o.margin*100).toFixed(0)+' %')+card('Surface temp',o.Twall.toFixed(0)+' &deg;C');
+ }
+ $('big').innerHTML=o.burn?'Burnout':o.Tj.toFixed(0)+' &deg;C';
+ $('big').style.color='var('+TXT[col]+')';
+ const s=$('status');s.textContent=st;s.style.color='var('+TXT[col]+')';s.style.background='var('+BG[col]+')';
+}
+$('q').addEventListener('input',e=>{$('qv').textContent=e.target.value+' W';render();});
+$('f').addEventListener('input',e=>{$('fv').textContent=(+e.target.value).toFixed(1)+' L/min';render();});
+document.querySelectorAll('.chip').forEach(c=>c.addEventListener('click',()=>{
+ cur=c.dataset.k;
+ document.querySelectorAll('.chip').forEach(x=>x.classList.toggle('on',x===c));
+ const two=M[cur].mode==='two';
+ $('f').disabled=two;$('frow').style.opacity=two?0.4:1;
+ $('fhint').textContent=two?'Flow rate is disabled — in pool boiling the limit is set by critical heat flux, not flow.':'';
+ render();
+}));
+render();
+</script>
+</body>
+</html>
