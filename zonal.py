@@ -82,7 +82,16 @@ def h_face_design(d, bank):
     """Kernel-implied per-face oil->plate film at the design operating
     point (nominal slot, pump-head-only flow), used to make the fin-rule
     layout self-consistent with the duct kernel (red-team F4). Returns
-    W/m2K = a11(z*_mid)/pitch."""
+    W/m2K = a11(z*_mid)/pitch.
+
+    Note (verification obs 4): this reads a11 from whatever bank the
+    caller built, so the value drifts a few percent with the kernel grid
+    resolution (n): ~255 at n=100, ~278 at a coarse mini-bank. The
+    layout snap has margin here - the 43 mm / every-2-cells snap holds
+    for h_face up to ~ 2 k_p t_p / (pitch)^2, i.e. it does not flip
+    until h_face exceeds a threshold well above these values - but the
+    shakedown asserts the resulting tube count so a future bank change
+    that moves the snap boundary is caught rather than silent."""
     rho, cp, k_o = d["rho"], d["cp"], d["k_oil"]
     H = d["h_cell"]
     Dh, A, fRe = bank.props(d["s_nom"])
@@ -94,6 +103,20 @@ def h_face_design(d, bank):
     zst = (H / 2) / (Dh * RePr)
     a11 = float(bank.a_of(d["s_nom"], np.array([zst]))[0, 1, 1])
     return a11 / d["pitch"]
+
+
+def snap_boundary_h(d):
+    """The h_face values at which the fin-rule tube pitch snaps to a
+    different number of cells, for the current geometry. Used to report
+    how much margin the design-point h_face has before the layout would
+    flip (verification obs 4)."""
+    k_p, t_p = 205.0, d["plate_t"]
+    out = {}
+    for n_per in (1, 2, 3, 4):
+        # P_rule = 2/m = pitch*n_per boundary -> m = 2/(pitch*n_per)
+        m_b = 2.0 / (d["pitch"] * n_per)
+        out[n_per] = 0.5 * (m_b ** 2) * k_p * t_p   # h at that m
+    return out
 
 
 def derived_layout(d, h_face):
@@ -414,10 +437,18 @@ def monte_carlo(d, bank, M=150, sigma_s=0.2e-3, sigma_c=0.08,
     p_exceed = n_exceed / M
     # rule of three: 0/M gives a 95% upper bound of 3/M
     p_ub95 = (3.0 / M) if n_exceed == 0 else None
+    # F10 follow-up (verification obs 3): the core is the razor-thin node,
+    # so report its exceedance count too. When the core already exceeds,
+    # the rule of three no longer applies on that node.
+    n_exceed_core = int(np.sum(Tcore > d["T_limit"]))
+    p_exceed_core = n_exceed_core / M
+    p_ub95_core = (3.0 / M) if n_exceed_core == 0 else None
     return dict(Tmax=Tmax, spread=spread, Tcore=Tcore, base=base,
                 closure_worst=float(clos.max()),
                 p_exceed=p_exceed, n_exceed=n_exceed, M=M,
-                p_ub95=p_ub95, tol=tol)
+                p_ub95=p_ub95, tol=tol,
+                n_exceed_core=n_exceed_core, p_exceed_core=p_exceed_core,
+                p_ub95_core=p_ub95_core)
 
 
 def default_d(nr=33, nc=33, C=2.0):
@@ -461,6 +492,16 @@ if __name__ == "__main__":
     print(f"  layout: h_face {lay['h_face']:.0f} W/m2K -> m {lay['m']:.1f}/m"
           f"  {lay['n_tubes']} tubes (every {lay['cells_per_tube']} cells)"
           f"  eta {lay['eta_bay']:.3f}")
+    # obs 4: the layout must not silently flip if the bank resolution
+    # changes. Assert the tube count and report the snap margin.
+    bnds = snap_boundary_h(d)
+    hf = lay["h_face"]
+    flip_above = bnds[lay["cells_per_tube"]]   # h above which tubes ++
+    assert lay["n_tubes"] == 17, f"layout snap moved: {lay['n_tubes']} tubes"
+    print(f"  snap margin: h_face {hf:.0f} vs the {lay['cells_per_tube']}"
+          f"->{lay['cells_per_tube']-1} cell boundary at "
+          f"{flip_above:.0f} W/m2K ({100*(flip_above-hf)/hf:.0f}% headroom "
+          f"before the layout would move to more tubes)")
     print(f"  water {r['h_w']:.0f} W/m2K ({r['water_regime']})  "
           f"energy: gen {r['Q_gen']:.0f} = water {r['Q_water']:.0f} + "
           f"case {r['Q_case']:.0f} W")
@@ -471,11 +512,16 @@ if __name__ == "__main__":
     print(f"\nF1 buoyancy: riser-return dT {Tbar - r['T_plen']:+.3f} C -> "
           f"net head {head:.2f} Pa of {d['dp_extra']} Pa pump (was ~9 Pa)")
 
-    # h_c sensitivity (F2)
-    print("\nF2 h_contact sweep (T_max):")
-    for hc in (20000, 8000, 4000, 2000):
+    # h_c sensitivity (F2) - report BOTH nodes (verification obs 2)
+    print("\nF2 h_contact sweep (can / core):")
+    for hc in (20000, 8000, 6000, 4000, 2000):
         rc = solve_zonal(dict(d, h_contact=hc), bank, nz=10, iters=200)
-        print(f"  h_c {hc:6d} W/m2K -> {rc['T_max']:.2f} C")
+        flag = ("  <- core over 45" if rc["T_core_max"] > 45 else
+                ("  <- can over 45" if rc["T_max"] > 45 else ""))
+        print(f"  h_c {hc:6d} W/m2K -> can {rc['T_max']:.2f}"
+              f"  core {rc['T_core_max']:.2f}{flag}")
+    print("  (the can clears 45 down to ~2900 W/m2K, but the CORE only "
+          "clears above ~7500 - within ~7% of the nominal 8000)")
 
     # optional oil->tube bypass (F3)
     rb = solve_zonal(dict(d, wetted_tube_frac=0.5), bank, nz=10, iters=200)

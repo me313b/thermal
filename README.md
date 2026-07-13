@@ -469,3 +469,33 @@ the design is marginal, and its margin depends on the unmeasured collar
 contact and on whether 45 C is a can or a core limit. The recommended
 next step is the one-tube two-crossing oil-bath rig point, which measures
 both the omitted oil-to-tube path and the contact conductance at once.
+
+## v9.5 final: verification round closed
+An independent verification pass signed off every v9.4 fix (all ten
+implemented, numbers reproduce, no regressions, requirements installs
+one) and raised four minor, non-blocking observations plus answers to the
+two open questions. v9.5 folds all four in (see VERIFICATION_RESPONSE.md):
+
+- **Core-node exceedance in the Monte Carlo (obs 3):** monte_carlo now
+  returns the core-based exceedance count, and the Zones tab shows it
+  beside the can-based one - a green confirmation when the core clears,
+  a warning when it does not (the core is the razor-thin node).
+- **Node-dependent h_c crossing (obs 2):** the h_c sweep now interpolates
+  and reports both crossings - the can clears down to ~2900 W/m2K but the
+  core only above ~7500 (within ~7% of the nominal 8000), so on a
+  core/plating criterion the braze must be essentially as good as assumed.
+- **Layout snap asserted (obs 4):** h_face_design is bank-dependent
+  (a11 drifts a few percent with kernel resolution); the shakedown now
+  asserts the tube count and prints the snap margin (~26-30% headroom to
+  the 33-tube boundary at h_face ~ 333 W/m2K), so a bank change that moves
+  the snap fails loudly. A snap_boundary_h() helper documents the edges.
+- **Stale memo numbers corrected (obs 1):** the shipped default is
+  can ~42.4 / core ~44.9 C (a +1.15 C shift over v9.3, from F1 and F4).
+
+The two open questions are now surfaced in the UI: completing both models
+with each other's missing physics converges near 38-40 C (so the
+bypass-off default is ~2-4 C conservative), and both temperature nodes are
+displayed so the can-vs-core specification decision cannot hide. The
+remaining uncertainty is measurement, not modelling: the one-tube,
+two-crossing oil-bath rig point pins h_c and the wetted-tube film and
+settles whether the core clears 45 C.

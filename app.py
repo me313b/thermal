@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v9.4"
+APP_VERSION = "v9.5"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -3252,8 +3252,13 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                 f"per-crossing collars and (with the bypass off) omits "
                 f"the direct oil-to-tube path - so a residual gap of a "
                 f"few °C is expected and brackets the modelling "
-                f"uncertainty. The truth for this pack most likely sits "
-                f"between the two.")
+                f"uncertainty. Completing each model with the other's "
+                f"missing physics (the zonal with the oil-to-tube "
+                f"bypass fully on, the lumped with the collar chain "
+                f"added) collapses the gap: both land near **38-40 °C** "
+                f"at central parameters, so the shipped default with the "
+                f"bypass off is most likely ~2-4 °C conservative, and "
+                f"the rig point buys back exactly that margin.")
 
         with st.expander("Contact-conductance sensitivity (the headline "
                          "margin is conditional on h_c)"):
@@ -3296,13 +3301,39 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                                                   y=1.15),
                     margin=dict(l=10, r=10, t=40, b=10))
                 st.plotly_chart(figh, width='stretch', key="zn_hcfig")
-                cross = [r[0] for r in rows if r[1] > d["T_limit"]]
-                if cross:
-                    st.caption(f"The can crosses {d['T_limit']:.0f} °C "
-                               f"below h_c ≈ {max(cross):.0f} W/m²·K. A "
-                               "mechanical press fit or an imperfect "
-                               "braze can land there - which is why the "
-                               "one-tube rig point matters.")
+
+                def _cross(vals):
+                    xs = np.array([r[0] for r in rows], float)
+                    ys = np.array(vals, float)
+                    inv = 1.0 / xs
+                    for i in range(len(ys) - 1):
+                        if (ys[i] - d["T_limit"]) * \
+                           (ys[i + 1] - d["T_limit"]) < 0:
+                            f = (d["T_limit"] - ys[i]) / (ys[i + 1]
+                                                          - ys[i])
+                            return 1.0 / (inv[i] + f * (inv[i + 1]
+                                                        - inv[i]))
+                    return None
+                xc = _cross([r[1] for r in rows])
+                xco = _cross([r[2] for r in rows])
+                msg = []
+                if xc:
+                    msg.append(f"the **can** clears the limit down to "
+                               f"h_c ≈ {xc:.0f} W/m²·K")
+                else:
+                    msg.append("the **can** clears the limit across "
+                               "this whole range")
+                if xco:
+                    msg.append(f"but the **core** only clears above "
+                               f"h_c ≈ {xco:.0f} W/m²·K - within "
+                               f"~{100 * (1 - xco / z_hc):.0f}% of the "
+                               f"current {z_hc:.0f}")
+                st.caption(
+                    ". ".join(msg) + ". So on a can criterion the braze "
+                    "can be quite imperfect, but on a core/plating "
+                    "criterion the design passes only if the joint is "
+                    "essentially as good as assumed - which is exactly "
+                    "what the one-tube rig point would measure.")
 
         if z_byp and zr.get("UA_bare", 0) > 0:
             st.caption(f"Direct oil-to-tube path ON: bare-tube "
@@ -3390,6 +3421,28 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                              f"{mc['p_exceed']:.3f}")
             mm[3].metric("Worst closure",
                          f"{mc['closure_worst'] * 100:.2f} %")
+            # verification obs 3: the core is the razor-thin node - show
+            # its exceedance count beside the can-based one.
+            if "n_exceed_core" in mc:
+                n_ec = mc["n_exceed_core"]
+                if n_ec == 0 and mc.get("p_ub95_core"):
+                    st.success(
+                        f"Core node: 0 / {mc['M']} samples over "
+                        f"{zd['T_limit']:.0f} °C (≤"
+                        f"{mc['p_ub95_core'] * 100:.1f}% 95% UB). Both "
+                        f"the can and the core clear the limit under "
+                        f"tolerance.")
+                else:
+                    st.warning(
+                        f"**Core node: {n_ec} / {mc['M']} samples put "
+                        f"the core over {zd['T_limit']:.0f} °C** (worst "
+                        f"core {mc['Tcore'].max():.2f} °C, point "
+                        f"estimate {mc['p_exceed_core'] * 100:.0f}%). The "
+                        f"can clears comfortably (0 / {mc['M']}), but on "
+                        f"a core/plating criterion the rule of three no "
+                        f"longer applies and this design sits at the "
+                        f"limit as drawn - see the h_c sweep for why the "
+                        f"core margin is thin.")
             zh1, zh2 = st.columns(2)
             fh1 = go.Figure(go.Histogram(x=mc["Tmax"], nbinsx=24,
                                          marker_color="#6366F1"))

@@ -281,7 +281,7 @@ scatter are not. Add the ones you think matter.
 | V5 | Energy closure, full pack | 0.19-0.20% | in = out across the network |
 | V6 | z-resolution independence | 0.02-0.03 °C (nz 10 vs 16-18) | march is grid-converged |
 | V7 | Uniform-input collapse | spread → 0.00 | no spurious per-channel asymmetry |
-| V8 | Lumped cross-check (**matched**) | zonal ~41.9 vs matched-serpentine lumped ~35.8 °C | two different-machinery solvers; the few-°C gap brackets modelling uncertainty (not "agreement") |
+| V8 | Lumped cross-check (**matched**) | zonal ~42.4 vs matched-serpentine lumped ~35.8 °C; completing both models converges near 38-40 | two different-machinery solvers; the few-°C gap brackets modelling uncertainty (not "agreement") |
 | V9 | Choke test | 0.5 mm narrowing → 81% flow share (cubic law predicts 42%) | flow sensitivity is near-linear, decomposed to the lens geometry metric `D_h²A/fRe` ratio 0.81 |
 | V10 | Monte Carlo robustness | scatter < 0.1 °C (at/below solver residue); 0/90 exceedances → ≤3.3% (95% UB, rule of three) | tolerance-robust to *scatter*; NOT to the h_c epistemic band |
 | V11 | FEA1 (lid, Roark) | +0.0% vs Roark | pressure-vessel mass |

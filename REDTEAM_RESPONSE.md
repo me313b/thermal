@@ -13,11 +13,12 @@ python app.py` and a full headless AppTest both pass.
 
 The headline honesty outcome up front: **the corrected model is less
 comfortable than v9.3, and that is the point.** At the default the can
-now sits at ~41.9 °C and the **core at ~44.5 °C** (F10), the buoyancy fix
+now sits at ~42.4 °C and the **core at ~44.9 °C** (F10; +1.15 °C over v9.3), the buoyancy fix
 removes ~9 Pa of spurious head and drops the solved velocity from 166 to
 ~122-162 mm/s depending on fluid (F1), and the contact conductance is now
-a slider with a sweep showing the pack crosses 45 °C below h_c ≈ 4000-6000
-W/m²·K (F2). We did **not** engineer the number back to 41.2. The tool now
+a slider with a sweep showing the pack crosses 45 °C node-dependently -
+the can below h_c ≈ 2900 W/m²·K, but the core only above ≈ 7500 W/m²·K,
+within ~7% of the nominal 8000 (F2). We did **not** engineer the number back to 41.2. The tool now
 tells the truth it was hiding: this design is marginal, and its margin
 depends on the unmeasured collar contact and on whether the limit is a
 can or a core limit.
@@ -68,15 +69,15 @@ live fea5 — the product rule stays, clearly flagged conservative.
 inputs (`default_d`, and sliders in the Zones tab). A one-click
 **sensitivity sweep** plots T_can and T_core against h_c with the 45 °C
 line, and reports the h_c at which the can crosses the limit. **Verify:**
-the sweep reproduces 20000→41.3, 8000→42.3, 4000→43.8, 2000→46.6 °C; the
-caption states the crossing explicitly. The headline is no longer
+the sweep reproduces (can) 20000→41.5, 8000→42.4, 4000→43.9, 2000→46.8 °C;
+the caption states both the can and the binding core crossing explicitly. The headline is no longer
 presented as unconditional.
 
 ### F3 / V8 — Mode-mismatched comparison; omitted oil→tube path [FIXED, two parts]
 
 *The comparison* is now **matched**: the Zones tab solves the lumped
 serpentine model at the zonal's own velocity and reports that number
-(~35.8 °C against the zonal mean ~41.9 °C), with a caption spelling out
+(~35.8 °C against the zonal mean ~42.4 °C), with a caption spelling out
 that the two use different machinery (lumped crossflow cell films + area
 credit; zonal per-crossing collars) so a few °C gap is expected and
 brackets the modelling uncertainty. The misleading "agree within a
@@ -137,7 +138,7 @@ answer to our own checklist question turned back on us.
 
 The core-to-can rise `R_core = 1/(4 pi k_r H)` is superposed and the peak
 **core** temperature reported next to the can (metric, Monte Carlo, and
-shakedown). At the default the core is ~44.5 °C against 45 — so if the
+shakedown). At the default the core is ~44.9 °C against 45 — so if the
 limit is a plating/core limit, the margin is ~0.5 °C, and combined with a
 sub-nominal h_c it fails. The tool now makes that visible instead of
 implying 3.8 °C of headroom.
