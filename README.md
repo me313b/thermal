@@ -299,3 +299,19 @@ back-to-top button, a print stylesheet (contents hidden, sections kept
 whole), a responsive single-column layout on narrow screens, and a
 provenance footer (Wang 2023, pack_fea_v1, the 58-pack database, BNEF
 December 2025).
+
+## v9.0: Live Pack becomes an instrument
+The animated cross-section is rebuilt around interaction. Hover any part -
+cells, bulk oil, the tube bank, the headspace, or the new chiller glyph
+with its spinning fan and live duty/COP/electrical readout - and a tooltip
+shows that station's live numbers; click to pin a full inspector card with
+the physics, the current tolls in °C, and the levers that move them. The
+weakest link is a red pulsing ring drawn on the actual hardware. The oil
+flow field is real circulation now: counter-rotating buoyant rolls for
+thermosiphon, one large roll when stirred, guided lanes with plates for
+serpentine, with an Arrows toggle revealing the field. Water inlet and
+outlet temperatures label the tube run; a live temperature legend sits
+under the pack and stretches with the Exaggerate toggle; the layout
+reserves space so nothing hides under the toolbar. Same self-diagnosing
+error surface, retina safety and Node syntax + runtime harness in the
+test gate.

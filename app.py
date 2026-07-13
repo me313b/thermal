@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v8.9"
+APP_VERSION = "v9.0"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import numpy as np
@@ -2737,7 +2737,8 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
         lp_state = dict(
             T_b=res["T_b"], T_core=res["T_core"], T_w_in=d["T_water_in"],
             dT_water=res["dT_water"], T_limit=d["T_limit"],
-            q_kw=Q_duty / 1000, c_rms=C_steady, spread=res["spread"],
+            T_amb=d["T_amb"], q_kw=Q_duty / 1000, c_rms=C_steady,
+            spread=res["spread"],
             u_mm_s=max(d["u_oil"], res["u_ts"]) * 1000,
             flow_lpm=d["flow_lpm"], flow_norm=min(d["flow_lpm"] / 20, 2.0),
             mode=("serpentine" if d.get("plate_on") else
@@ -2749,8 +2750,87 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
             fill_frac=g["fill_h"] / g["Lz"],
             cell_top_frac=(d["bottom_gap"] + d["h_cell"]) / g["Lz"],
             cell_bot_frac=d["bottom_gap"] / g["Lz"],
-            weak=weak_name)
-        components.html(live_pack_html(lp_state), height=436)
+            headspace_mm=d["gas_gap"] * 1000,
+            weak=weak_name.lower(),
+            weak_region=("tubes" if weak_name in
+                         ("Water film", "Oil to tube+fins") else "cells"),
+            chil_duty_kw=(res["Q_w"] + P_pump) / 1000,
+            chil_cop=chil["COP"], chil_el_w=chil["P_el"])
+        _q_cell = Q_duty / g["N"]
+        lp_stations = [
+            dict(id="cells",
+                 title=f"Cells - {g['N']} x {d['fmt']}",
+                 hint=(f"can {res['T_b']:.1f} °C, core {res['T_core']:.1f} "
+                       f"°C, {_q_cell:.2f} W each"),
+                 body=(f"<p>Each cell makes <b>{_q_cell:.2f} W</b> at "
+                       f"{C_steady:.2f}C rms; heat scales with C². The can "
+                       f"sits at <b>{res['T_b']:.1f} °C</b>, the core "
+                       f"<b>{res['T_core']:.1f} °C</b> (radial conduction, "
+                       f"k_r = {d['k_rad']:.1f} W/m·K).</p>"
+                       f"<p>The first oil film costs "
+                       f"<b>{Q_duty*res['R_b']:.1f} °C</b>: h = "
+                       f"{res['h_cell']:.0f} W/m²·K over "
+                       f"{g['A_cells']:.1f} m². Move the oil to thin it.</p>"
+                       f"<p>DCIR now {r_of_T(d, res['T_b']):.1f} mΩ vs "
+                       f"{d['r_dc']:.0f} at 25 °C - the hot pack makes "
+                       f"{100*(1-r_of_T(d,res['T_b'])/d['r_dc']):.0f}% "
+                       "less heat.</p>")),
+            dict(id="oil",
+                 title="Bulk oil - mixer and flywheel",
+                 hint=(f"{res['T_il']:.1f} °C, circulation "
+                       f"{max(d['u_oil'], res['u_ts'])*1000:.1f} mm/s"),
+                 body=(f"<p>Bulk oil at <b>{res['T_il']:.1f} °C</b>. "
+                       f"Circulation {max(d['u_oil'],res['u_ts'])*1000:.1f} "
+                       f"mm/s ({lp_state['mode']}) keeps the spread at "
+                       f"<b>{res['spread']:.1f} °C</b> (criterion 5).</p>"
+                       f"<p>Thermal buffer "
+                       f"{(masses['C_oil']+masses['C_batt'])/1e3:.0f} kJ/K "
+                       "- short peaks never reach the steady picture.</p>"
+                       f"<p>Casing sheds {res['Q_atm']:.0f} W free.</p>")),
+            dict(id="tubes",
+                 title=f"Tubes and fins - {d['n_tubes']} x "
+                       f"{d['tube_mat'].lower()}",
+                 hint=(f"h_oil {res['h_tube']:.0f}, water Re "
+                       f"{res['Re_water']:.0f} ({res['water_regime']})"),
+                 body=(f"<p>Second oil film: h = {res['h_tube']:.0f} "
+                       f"W/m²·K, A_eff = {res['A_oilside']:.1f} m² -> "
+                       f"<b>{Q_duty*res['R_ot']:.1f} °C</b>. Wall: "
+                       f"negligible.</p>"
+                       f"<p>Water film: {res['water_regime']}, Re = "
+                       f"{res['Re_water']:.0f}, h = {res['h_water']:.0f} "
+                       f"-> <b>{Q_duty*res['R_in']:.1f} °C</b>. In laminar "
+                       "flow more speed does nothing - cross Re 3000.</p>"
+                       f"<p>Stream warms {res['dT_water']:.1f} °C along "
+                       "the tubes; counterflow plumbing removes that "
+                       "spread for free.</p>")),
+            dict(id="head",
+                 title="Headspace and enclosure",
+                 hint=f"{d['gas_gap']*1000:.0f} mm gas, burst "
+                      f"{d['p_des_bar']:.1f} bar g",
+                 body=(f"<p>{d['gas_gap']*1000:.0f} mm nitrogen blanket "
+                       "absorbs oil expansion and vent gas; burst disc at "
+                       f"{d['p_des_bar']:.1f} bar g sizes the "
+                       f"{masses['enc']['t_mm']:.1f} mm effective wall "
+                       f"({masses['m_struct']:.0f} kg - the price of "
+                       "abuse tolerance).</p>")),
+            dict(id="chiller",
+                 title="Chiller",
+                 hint=(f"{(res['Q_w']+P_pump)/1000:.2f} kW duty, COP "
+                       f"{chil['COP']:.1f}, {chil['P_el']:.0f} W el"),
+                 body=(f"<p>Re-cools the loop to {d['T_water_in']:.0f} °C. "
+                       f"Duty <b>{(res['Q_w']+P_pump)/1000:.2f} kW</b>, "
+                       f"COP <b>{chil['COP']:.1f}</b> (45% of Carnot on a "
+                       f"{chil['lift']:.0f} °C lift) -> "
+                       f"<b>{chil['P_el']:.0f} W</b> electricity. Room "
+                       f"receives {(res['Q_w']+P_pump+chil['P_el'])/1000:.2f}"
+                       " kW - heat plus the compressor's wage.</p>"
+                       f"<p>Warmer set point: double win (COP up, DCIR "
+                       f"down) to the {d['T_limit']:.0f} °C limit; above "
+                       f"~{d['T_amb']+5:.0f} °C a dry cooler replaces the "
+                       "compressor entirely.</p>")),
+        ]
+        components.html(live_pack_html(lp_state, lp_stations),
+                        height=436)
         st.caption("Live Pack: oil particles move at the solved circulation "
                    "speed, water beads travel and warm along the tubes, and "
                    "colours are the real solved temperatures. Its controls "
