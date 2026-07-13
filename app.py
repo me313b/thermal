@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v9.0"
+APP_VERSION = "v9.1"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import numpy as np
@@ -31,6 +31,7 @@ import streamlit.components.v1 as components
 import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from livepack import live_pack_html
+from cockpit import cockpit_html
 
 pio.templates["packlab"] = go.layout.Template(layout=dict(
     font=dict(family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif",
@@ -1710,6 +1711,32 @@ def smoke():
     html = export_report_html(secs, figs, meta_s)
     deep = sankey_deep_dive(d, g, fl, res, masses, Q, Q_bus, 0.1, 0.0, ch,
                             d["C1"])
+    cp_html = cockpit_html(dict(
+        design=dict(C1=2.0, T_amb=25.0, coolant=d["coolant"], flow_lpm=10.0,
+                    T_water_in=20.0, n_tubes=16, circ0="thermosiphon",
+                    u0=0.05, plate_t=0.0015, plate_contact=0.8,
+                    fins_on=True, pitch=d["pitch"], d_cell=d["d_cell"],
+                    h_cell=d["h_cell"], tube_od=d["tube_od"],
+                    r_dc=d["r_dc"], k_dcir=d["k_dcir"], k_rad=d["k_rad"],
+                    cap_Ah=d["cap_Ah"], h_ext=d["h_ext"], k_tube=385.0,
+                    fin_h=d["fin_h"], fin_t=d["fin_t"], fin_p=d["fin_p"],
+                    k_fin=205.0, T_limit=45.0, limit_core=False,
+                    interstitial=False),
+        geom=dict(N=g["N"], A_cells=g["A_cells"], d_i=g["d_i"],
+                  L_tube=g["L_tube"], A_box_ext=g["A_box_ext"],
+                  A_flow=g["A_flow"], D_h=g["D_h"], fill_h=g["fill_h"],
+                  H_loop=0.045, n_rows=g["n_rows"], plate_len=0.83,
+                  fill_frac=0.8, cell_top_frac=0.55, cell_bot_frac=0.04,
+                  n_rows_draw=12),
+        fluids=[dict(name=d["coolant"], rho=fl["rho"], cp=fl["cp"],
+                     k=fl["k"], nu25=fl["nu25"], B=fl["B"],
+                     beta=fl["beta"])],
+        water=dict(rho=1000.0, cp=4180.0, k=0.60, mu=8.9e-4),
+        base=dict(T_b=res["T_b"], I0=100.0,
+                  Rbus0=busbar_props(d, g)["R"]),
+        consts=dict(K_loop=5.0, cal=d.get("cal_h", 1.0))))
+    assert len(cp_html) > 15000 and "PACK COCKPIT" in cp_html
+    print(f"cockpit: {len(cp_html)//1000} kB component")
     assert len(deep) > 4000 and "first law" in deep and "COP" in deep
     print(f"deep dive: {len(deep)} chars, {deep.count('**')//2} bold terms")
     assert len(secs) == 9 and "<html" in html
@@ -2468,8 +2495,9 @@ def main():
         st.session_state.cool_df = _read_coolants()
     cool_df = st.session_state.cool_df
 
-    tabs = st.tabs(["Design", "Duty", "Results", "Improve", "Ideas", "Safety",
-                    "Compare", "Learn", "Validate", "Report"])
+    tabs = st.tabs(["Design", "Duty", "Results", "Cockpit", "Improve",
+                    "Ideas", "Safety", "Compare", "Learn", "Validate",
+                    "Report"])
 
     with tabs[0]:
         colL, colR = st.columns([1.15, 1], gap="large")
@@ -2873,8 +2901,109 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
             st.plotly_chart(setpoint_trade(d, g, fl, C_steady, d["T_amb"]),
                             use_container_width=True, key="res_setpoint")
 
-    # ---------------- Improve ---------------- #
+    # ---------------- Cockpit ---------------- #
     with tabs[3]:
+        st.caption("A pilot's panel for the whole system: every lever on "
+                   "the rails, every readout linked, instant. The physics "
+                   "runs in your browser as a faithful port of the app's "
+                   "solver and is audited against it on load (chip, top "
+                   "left). Nothing here changes the design until you copy "
+                   "the settings and apply them below.")
+        _H_loop = (d["h_cell"] / 2 + d["tube_zone"] / 2
+                   if d.get("tube_plane", "Top of pack") == "Top of pack"
+                   else 0.008 if d.get("tube_plane") ==
+                   "Interstitial (between rows)" else d["h_cell"] / 2)
+        cp_fluids = []
+        for _, rw in cool_df.iterrows():
+            fdd = fluid_dict(rw)
+            cp_fluids.append(dict(name=fdd["name"], rho=fdd["rho"],
+                                  cp=fdd["cp"], k=fdd["k"],
+                                  nu25=fdd["nu25"], B=fdd["B"],
+                                  beta=fdd["beta"]))
+        cp_pay = dict(
+            design=dict(C1=float(C_steady), T_amb=d["T_amb"],
+                        coolant=d["coolant"], flow_lpm=d["flow_lpm"],
+                        T_water_in=d["T_water_in"], n_tubes=d["n_tubes"],
+                        circ0=("serpentine" if d.get("plate_on") else
+                               "stirred" if d["u_oil"] > 0 else
+                               "thermosiphon"),
+                        u0=(d.get("u_guided", 0.05) if d.get("plate_on")
+                            else max(d["u_oil"], 0.05)),
+                        plate_t=d.get("plate_t", 0.0015),
+                        plate_contact=d.get("plate_contact", 0.8),
+                        fins_on=d["fins_on"], pitch=d["pitch"],
+                        d_cell=d["d_cell"], h_cell=d["h_cell"],
+                        tube_od=d["tube_od"], r_dc=d["r_dc"],
+                        k_dcir=d["k_dcir"], k_rad=d["k_rad"],
+                        cap_Ah=d["cap_Ah"], h_ext=d["h_ext"],
+                        k_tube=K_TUBE[d["tube_mat"]],
+                        fin_h=d["fin_h"], fin_t=d["fin_t"],
+                        fin_p=d["fin_p"],
+                        k_fin=205.0 if d["fin_mat"] == "Aluminium"
+                        else 385.0,
+                        T_limit=d["T_limit"],
+                        limit_core=bool(d["limit_core"]),
+                        interstitial=d.get("tube_plane") ==
+                        "Interstitial (between rows)"),
+            geom=dict(N=g["N"], A_cells=g["A_cells"], d_i=g["d_i"],
+                      L_tube=g["L_tube"], A_box_ext=g["A_box_ext"],
+                      A_flow=g["A_flow"], D_h=g["D_h"],
+                      fill_h=g["fill_h"], H_loop=_H_loop,
+                      n_rows=g["n_rows"],
+                      plate_len=max(g["Lx"] - 2 * d["manifold_margin"],
+                                    0.1),
+                      fill_frac=g["fill_h"] / g["Lz"],
+                      cell_top_frac=(d["bottom_gap"] + d["h_cell"])
+                      / g["Lz"],
+                      cell_bot_frac=d["bottom_gap"] / g["Lz"],
+                      n_rows_draw=min(g["n_rows"], 14)),
+            fluids=cp_fluids,
+            water=dict(rho=1000.0, cp=4180.0, k=0.60, mu=8.9e-4),
+            base=dict(T_b=res["T_b"],
+                      I0=d["C1"] * d["cap_Ah"] * d["Np"],
+                      Rbus0=busbar_props(d, g)["R"]),
+            consts=dict(K_loop=d.get("K_loop", 5.0),
+                        cal=d.get("cal_h", 1.0)))
+        components.html(cockpit_html(cp_pay), height=820)
+        with st.expander("Apply cockpit settings to the design"):
+            st.caption("Press 'Copy settings for Design' in the cockpit, "
+                       "paste here, and apply. Values land on the real "
+                       "Design widgets.")
+            cp_txt = st.text_area("Paste settings JSON", "", height=68,
+                                  key="cp_paste",
+                                  label_visibility="collapsed")
+            if st.button("Apply to design", key="cp_apply") and cp_txt:
+                try:
+                    j = json.loads(cp_txt)
+                    pen = st.session_state.setdefault("_pending", {})
+                    mapping = {"flow": "w_flow", "twin": "w_twin",
+                               "ntub": "w_ntub", "pitch": "w_pitch",
+                               "tamb": "w_tamb", "fluid": "w_fluid",
+                               "fins": "w_fins", "plt": "w_plt",
+                               "plc": "w_plc", "c1": "w_c1"}
+                    for k_, wk in mapping.items():
+                        if k_ in j:
+                            pen[wk] = (int(j[k_]) if k_ == "ntub"
+                                       else j[k_])
+                    circ_map = {"thermosiphon": "Thermosiphon only",
+                                "stirred": "Open stirring",
+                                "serpentine":
+                                "Serpentine plates (guided)"}
+                    if "circ" in j:
+                        pen["w_circ"] = circ_map.get(j["circ"],
+                                                     "Thermosiphon only")
+                        if j["circ"] == "serpentine" and "u" in j:
+                            pen["w_ugd"] = float(j["u"])
+                        elif j["circ"] == "stirred" and "u" in j:
+                            pen["w_uoil"] = float(j["u"])
+                    st.success("Applied - the whole app now reflects the "
+                               "cockpit settings.")
+                    st.rerun()
+                except Exception as e_:
+                    st.error(f"Could not parse that: {e_}")
+
+    # ---------------- Improve ---------------- #
+    with tabs[4]:
         with st.container(border=True):
             st.markdown("#### Predictor - what happens if...")
             st.caption("Play with the levers; nothing is saved to the design. "
@@ -2937,7 +3066,7 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
         improve_core(d, g, fl, masses, res, Q_duty, C_steady, cool_df)
 
     # ---------------- Ideas ---------------- #
-    with tabs[4]:
+    with tabs[5]:
         st.caption("Concepts tried against the live design. Baseline = this "
                    "design with no forced circulation. Adopt a winner via "
                    "Design - Circulation method.")
@@ -3019,7 +3148,7 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                 "design, and serviceability.")
 
     # ---------------- Safety ---------------- #
-    with tabs[5]:
+    with tabs[6]:
         st.markdown("Order-of-magnitude screening plus the engineering checklist. "
                     "Nothing here replaces abuse testing.")
         runaway_ui(d, g, fl, masses, res)
@@ -3035,7 +3164,7 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
 * Ester fluids: monitor moisture; copper: use inhibited oil or plated tubes.""")
 
     # ---------------- Compare ---------------- #
-    with tabs[6]:
+    with tabs[7]:
         st.subheader("Architectures")
         arch_tab(d, g, fl, masses, C_steady)
         st.markdown("---")
@@ -3123,7 +3252,7 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
         bench_prod_tab(masses, Cmax)
 
     # ---------------- Learn ---------------- #
-    with tabs[7]:
+    with tabs[8]:
         with st.expander("0. Where the heat goes - the whole story in plain "
                          "words", expanded=True):
             hot1 = "the water film inside the tubes" \
@@ -3239,7 +3368,7 @@ local film temperature - see the ν(T) curve in Design.""")
                   ok=ok, T_gov=T_gov, T_limit=d["T_limit"],
                   kwh=masses["E_kwh"], mass=masses["m_pack"], Cmax=Cmax,
                   chil_el=chil["P_el"])
-    with tabs[9]:
+    with tabs[10]:
         cbt, _ = st.columns([1, 3])
         cbt.download_button("Download this report (.html)",
                             data=export_report_html(secs, figs_r, meta_r),
@@ -3248,7 +3377,7 @@ local film temperature - see the ν(T) curve in Design.""")
         render_report_tab(secs, figs_r, meta_r)
 
     # ---------------- Validate and tune ---------------- #
-    with tabs[8]:
+    with tabs[9]:
         st.subheader("Benchmark: Wang et al. 2023")
         bench_wang_tab()
         st.markdown("---")

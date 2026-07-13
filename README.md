@@ -315,3 +315,34 @@ under the pack and stretches with the Exaggerate toggle; the layout
 reserves space so nothing hides under the toolbar. Same self-diagnosing
 error surface, retina safety and Node syntax + runtime harness in the
 test gate.
+
+## v9.1: the Cockpit - a pilot's panel for the whole system
+A dedicated tab where every lever lives on rails around the live pack and
+every readout responds instantly. The physics runs in the browser as a
+line-faithful port of the app's solver: Andrade viscosity at film
+temperature, Churchill-Chu films (vertical cells, horizontal tubes) with
+the gap-confinement penalty and the Nu-cubed mixed-convection blend,
+Schmidt fin efficiency and the serpentine plate-fin model, the
+thermosiphon bisection, Hausen/Gnielinski water side with the 2300-3000
+bridge, the DCIR-coupled 60-pass fixed point (busbars resized with
+current), pump and stirrer and serpentine-channel laws, and the
+45%-Carnot chiller. On load the surrogate is audited against the injected
+full-Python solve and the deviation is shown on the panel chip; if it
+ever exceeds 0.4 degrees C the chip flags for review.
+Left rail (POWER): C-rate 0.2-6, ambient, dielectric fluid selector, cell
+pitch with the live gap readout. Right rail (COOLING): water flow, inlet
+temperature, tube count, circulation mode (thermosiphon / stirred /
+serpentine) with conditional velocity and plate thickness/contact
+controls, tube fins switch. Primary flight display: can/core with a
+colour margin bar, margin to limit, spread vs the 5 degree criterion,
+heat with the casing share, chiller duty/COP/electrical, parasitics, and
+added plate mass. Annunciators: flashing LIMIT, LAMINAR, GAP<6, SPREAD>5,
+and DRY-COOLER-OK. The canvas keeps the full hover/click station
+inspectors, now regenerated from the live in-browser solve, with the
+weakest-link ring, flow field, water in/out labels and temperature
+legend all live. A copy button exports the settings as JSON; an apply
+box under the panel lands them on the real Design widgets (the component
+sandbox has no return channel, so the clipboard bridge is the honest
+route). Disclosed simplifications: tube length and box size are held
+fixed under the pitch lever, and exactness at the current design point
+is guaranteed by the audit chip rather than assumed.
