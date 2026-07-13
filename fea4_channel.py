@@ -246,6 +246,8 @@ if __name__ == "__main__" and True:
           % (L["zs"][8], a0[0,0], a0[0,1], a0[1,0], a0[1,1]))
     print("lens kernel  FD     :  a=[[%.2f %.2f];[%.2f %.2f]]"
           % (aF[0,0], aF[0,1], aF[1,0], aF[1,1]))
-    print("FD cell->plate short-circuit -a_cp = %.2f W/m.K "
-          "(v1 conduction gave ~%.2f)"
+    print("FD cell->plate cross-coupling -a_cp = %.2f W/m.K "
+          "(fully developed limit; the v1 stagnant-conduction study "
+          "gave ~%.2f W/m.K, a DIFFERENT regime - shown for scale, "
+          "not as a reproduction)"
           % (-aF[0,1], 0.134*158*0.033))

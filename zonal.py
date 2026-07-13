@@ -1,21 +1,42 @@
 """zonal.py - plate-channel zonal thermal-hydraulic network + Monte Carlo.
 
 Physics: every inter-row gap carries a water-rooted aluminium plate with
-an oil slot on each face; oil flows upward; each slot column obeys the
-exact developing-flow kernel from fea4_channel.graetz_kernel on the true
-lens cross-section:
+an oil slot on each face; oil recirculates upward through the slots; each
+slot column obeys the exact developing-flow kernel from
+fea4_channel.graetz_kernel on the true lens cross-section:
     [q'_c; q'_p] = a(z*, s) . [T_cell - Tb; T_plateface - Tb]
 Fin knockdown eta_bay (product rule, roots at the derived tube pitch
-P = 2/m, tubes at mid-height) scales the plate-side kernel entries.
-Hydraulics: laminar fRe(s) at mu(T) with buoyancy assist against a
-shared manifold head -> the cubic-law tolerance sensitivity. Water is
-marched tube-by-tube across the plates through contact + wall + film.
-Validations: energy closure, uniform-input collapse, z-independence.
+P = 2/m) scales the plate-side kernel entries.
+
+This is the v9.4 build, incorporating the external red-team findings:
+ - Buoyancy head is referenced to the loop RETURN (plenum) temperature,
+   not the water inlet: in a closed recirculating loop the net head is
+   rho.beta.g.H.(T_riser - T_downcomer), and the downcomer sits at
+   T_plen (F1). At the default this makes buoyancy near-zero and the
+   pump head dominant, which is the conservative and correct behaviour.
+ - The water-side Nusselt number comes from correlations.water_nu, the
+   SAME function the lumped solver uses, with a continuous 2300-3000
+   transition bridge (F5); no laminar-turbulent step.
+ - Contact conductance h_contact and the tube-to-plate collar
+   engagement factor are named inputs, surfaced with a sensitivity
+   sweep in the app, not buried constants (F2).
+ - The tube layout is derived from the kernel-implied plate film
+   (a11/pitch at the design point), so the fin rule is self-consistent
+   with the duct it feeds (F4).
+ - An optional, explicitly bounded direct oil-to-tube path can be
+   switched on (wetted_tube_frac > 0); its magnitude depends on header
+   geometry, so it is off by default and its effect is shown live (F3).
+ - The core-to-can rise (R_core = 1/(4 pi k_r H)) is superposed and the
+   peak CORE temperature reported alongside the can temperature (F10).
+
+Validations: energy closure, uniform-input collapse, z-independence,
+and the fea4 kernel gates. Run `python zonal.py` for the shakedown.
 """
 import math
 import numpy as np
 
 from fea4_channel import graetz_kernel
+from correlations import water_nu
 
 WATER = dict(rho=1000.0, cp=4180.0, k=0.60, mu=8.9e-4)
 
@@ -57,6 +78,24 @@ class KernelBank:
         return out
 
 
+def h_face_design(d, bank):
+    """Kernel-implied per-face oil->plate film at the design operating
+    point (nominal slot, pump-head-only flow), used to make the fin-rule
+    layout self-consistent with the duct kernel (red-team F4). Returns
+    W/m2K = a11(z*_mid)/pitch."""
+    rho, cp, k_o = d["rho"], d["cp"], d["k_oil"]
+    H = d["h_cell"]
+    Dh, A, fRe = bank.props(d["s_nom"])
+    nu_n = d["nu25"] * math.exp(
+        d["B"] * (1 / (d["T_in"] + 15.0 + 273.15) - 1 / 298.15))
+    mu_n = rho * nu_n
+    u_n = max(d["dp_extra"] * 2 * Dh ** 2 / (fRe * mu_n * H), 1e-6)
+    RePr = max(u_n * Dh / (k_o / (rho * cp)), 1e-9)
+    zst = (H / 2) / (Dh * RePr)
+    a11 = float(bank.a_of(d["s_nom"], np.array([zst]))[0, 1, 1])
+    return a11 / d["pitch"]
+
+
 def derived_layout(d, h_face):
     k_p, t_p = 205.0, d["plate_t"]
     m = math.sqrt(2.0 * max(h_face, 5.0) / (k_p * t_p))
@@ -69,7 +108,8 @@ def derived_layout(d, h_face):
     ex = lambda x: math.tanh(x) / max(x, 1e-9)
     eta = ex(m * P_snap / 2) * ex(m * d["h_cell"] / 2)
     return dict(m=m, P_rule=P_rule, P_snap=P_snap, n_tubes=n_t,
-                xk=xk, eta_bay=eta, cells_per_tube=n_per)
+                xk=xk, eta_bay=eta, cells_per_tube=n_per,
+                h_face=h_face)
 
 
 def solve_zonal(d, bank, s_ch=None, contact=None, heat_map=None,
@@ -80,8 +120,7 @@ def solve_zonal(d, bank, s_ch=None, contact=None, heat_map=None,
     Newton with the march's own Jacobian; per-bay plate-face solved in
     closed form against the root chain (contact + wall + water film);
     water marched tube-by-tube; recirculation plenum solved from the
-    linear exit map T_exit = A + P.T_plen. Energy closure is the
-    convergence monitor and is returned."""
+    linear exit map. Energy closure is the convergence monitor."""
     nr, nc = d["n_rows"], d["n_cols"]
     n_gap = nr - 1
     n_ch = 2 * n_gap + 2
@@ -109,36 +148,52 @@ def solve_zonal(d, bank, s_ch=None, contact=None, heat_map=None,
     q_cell0 = (d["C"] * d["cap_Ah"]) ** 2 * d["r_dc"] / 1000.0
     hm = np.ones((nr, nc)) if heat_map is None else (1.0 + heat_map)
 
-    lay = derived_layout(d, h_face=150.0)
+    # F4: layout from the kernel-implied plate film, not a stale 150
+    hf = h_face_design(d, bank)
+    lay = derived_layout(d, h_face=hf)
     n_t = lay["n_tubes"]
     eta = lay["eta_bay"]
     if contact is None:
         contact = np.full((n_gap, n_t), d["plate_contact"])
     col_bay = np.minimum((np.arange(nc) * d["pitch"]
                           // lay["P_snap"]).astype(int), n_t - 1)
-    ncol_bay = np.bincount(col_bay, minlength=n_t).astype(float)
 
+    # ---- water-side root chain ----
     d_i = d["tube_od"] - 2 * d["tube_wall"]
     mdot_w = d["flow_lpm"] / 60 * WATER["rho"] / 1000 / n_t
     Re_w = 4 * mdot_w / (math.pi * WATER["mu"] * d_i)
     Pr_w = WATER["mu"] * WATER["cp"] / WATER["k"]
     L_t = max(n_gap * d["pitch"], 0.05)
-    if Re_w < 2300:
-        gz = (d_i / L_t) * Re_w * Pr_w
-        Nu_w = 3.66 + 0.0668 * gz / (1 + 0.04 * gz ** (2 / 3))
-    else:
-        f = (0.790 * math.log(max(Re_w, 3000)) - 1.64) ** -2
-        Nu_w = ((f / 8) * (Re_w - 1000) * Pr_w
-                / (1 + 12.7 * math.sqrt(f / 8)
-                   * (Pr_w ** (2 / 3) - 1)))
+    Nu_w, water_regime = water_nu(Re_w, Pr_w, d_i, L_t)   # F5 shared
     h_w = Nu_w * WATER["k"] / d_i
     per_len = d["pitch"]
     R_film = 1 / (h_w * math.pi * d_i * per_len)
     R_wl = math.log(d["tube_od"] / d_i) / (2 * math.pi
                                            * d["k_tube"] * per_len)
-    A_ct = math.pi * d["tube_od"] * d["plate_t"] * 6.0
-    HC = 8000.0
+    # F2: contact conductance and collar engagement are named inputs.
+    HC = d.get("h_contact", 8000.0)
+    collar = d.get("collar_factor", 6.0)      # effective collar length
+    A_ct = math.pi * d["tube_od"] * d["plate_t"] * collar  # per crossing
     Rr = (1.0 / (HC * A_ct * contact) + R_wl + R_film)   # (n_gap,n_t)
+
+    # F3: optional direct oil->tube bypass (off by default; magnitude is
+    # header-geometry dependent, so it is exposed rather than assumed).
+    frac = float(d.get("wetted_tube_frac", 0.0))
+    if frac > 1e-6:
+        L_tube_each = n_gap * d["pitch"]
+        h_oil_t = float(d.get("h_oil_tube", 150.0))
+        A_bo = frac * n_t * math.pi * d["tube_od"] * L_tube_each
+        A_bi = frac * n_t * math.pi * d_i * L_tube_each
+        R_wall_b = (math.log(d["tube_od"] / d_i)
+                    / (2 * math.pi * d["k_tube"]
+                       * frac * n_t * L_tube_each))
+        UA_bare = 1.0 / (1.0 / (h_oil_t * A_bo) + R_wall_b
+                         + 1.0 / (h_w * A_bi))
+        # per plate channel, per unit length, per column: the march sums
+        # over 2*n_gap channels x nc columns x H (z-integral).
+        Gw_perlen = UA_bare / max(2 * n_gap * nc, 1) / H
+    else:
+        UA_bare, Gw_perlen = 0.0, 0.0
 
     T_cell = np.full((nr, nc), d["T_in"] + 12.0)
     Tb = np.full((n_ch, nc, nz), d["T_in"] + 5.0)
@@ -151,28 +206,34 @@ def solve_zonal(d, bank, s_ch=None, contact=None, heat_map=None,
         try:
             T_cell = init["T_cell"].copy()
             T_plen = float(init["T_plen"])
-            Tf = init["Tf"].copy()
-            T_wat = init["T_wat"].copy()
+            if init["Tf"].shape == Tf.shape:
+                Tf = init["Tf"].copy()
+            if init["T_wat"].shape == T_wat.shape:
+                T_wat = init["T_wat"].copy()
             if init["Tb"].shape == Tb.shape:
                 Tb = init["Tb"].copy()
-            mdot_col = init["mdot_col"].copy()
+            if init["mdot_col"].shape == (n_ch,):
+                mdot_col = init["mdot_col"].copy()
         except (KeyError, AttributeError):
             pass
     closure = 1.0
+    q_bare_gap = np.zeros(n_gap)
 
     for it in range(iters):
-        # ---- 1. hydraulics (clamped, under-relaxed) ----
+        # ---- 1. hydraulics: buoyancy referenced to the loop return ----
+        # F1: net head = rho.beta.g.H.(T_riser - T_downcomer); the
+        # downcomer/return sits at T_plen, not the water inlet.
         Tbar = np.clip(Tb.mean(axis=(1, 2)), d["T_in"] - 5,
                        d["T_in"] + 60)
         mu = rho * nu(Tbar)
         dp = d["dp_extra"] + rho * beta * 9.81 * np.clip(
-            Tbar - d["T_in"], 0.0, 45.0) * H
+            Tbar - T_plen, 0.0, 45.0) * H
         ubar = dp * 2 * Dh ** 2 / (fRe * mu * H)
         m_new = np.maximum(rho * ubar * Acs, 1e-7)
         mdot_col = (m_new if mdot_col is None
                     else mdot_col + relax * (m_new - mdot_col))
 
-        # ---- 2. channel march (exact segment update) ----
+        # ---- 2. channel march (exact exponential segment update) ----
         alpha = k_o / (rho * cp)
         RePr = np.maximum(mdot_col / (rho * Acs), 1e-9) * Dh / alpha
         Tb_new = np.empty_like(Tb)
@@ -181,16 +242,21 @@ def solve_zonal(d, bank, s_ch=None, contact=None, heat_map=None,
         Jc = np.zeros((nr, nc))
         W_bay = np.zeros((n_gap, n_t))
         S_bay = np.zeros((n_gap, n_t))
+        q_bare_new = np.zeros(n_gap)
         Q_case_new = 0.0
         Qc_tot = 0.0
+        Tw_gap_all = T_wat.mean(axis=0)              # (n_gap,)
         for i in range(n_ch):
             r, pidx = side_row[i], side_plate[i]
             zst = z / (Dh[i] * max(RePr[i], 1e-9))
             a = bank.a_of(s_ch[i], zst).copy()       # (nz,2,2)
+            gw = 0.0
             if pidx >= 0:
                 a[:, 0, 1] *= eta; a[:, 1, 0] *= eta
                 a[:, 1, 1] *= eta
                 Tp = Tf[pidx, col_bay]               # (nc,)
+                gw = Gw_perlen
+                Tw_g = Tw_gap_all[pidx]
             else:
                 Gf = float(a[:, 1, 1].sum()) * dz
                 f_e = (d["h_ext"] * A_col_edge
@@ -198,6 +264,7 @@ def solve_zonal(d, bank, s_ch=None, contact=None, heat_map=None,
                 a[:, 0, 1] *= f_e; a[:, 1, 0] *= f_e
                 a[:, 1, 1] *= f_e
                 Tp = np.full(nc, d["T_amb"])
+                Tw_g = d["T_amb"]
             Tbi = Tb[i].copy()
             Tbi[:, 0] = T_plen
             mcp = float(mdot_col[i] * cp)
@@ -206,9 +273,10 @@ def solve_zonal(d, bank, s_ch=None, contact=None, heat_map=None,
             for kz in range(nz):
                 a00, a01 = a[kz, 0, 0], a[kz, 0, 1]
                 a10, a11 = a[kz, 1, 0], a[kz, 1, 1]
-                Gc_row, Gp_row = a00 + a10, a01 + a11
-                G = max(Gc_row + Gp_row, 1e-12)
-                Tw_eff = (Gc_row * Tc_r + Gp_row * Tp) / G
+                Gc_row = a00 + a10
+                Gp_row = a01 + a11
+                G = max(Gc_row + Gp_row + gw, 1e-12)
+                Tw_eff = (Gc_row * Tc_r + Gp_row * Tp + gw * Tw_g) / G
                 x = G * dz / mcp
                 ex = math.exp(-min(x, 50.0))
                 fbar = (1.0 - ex) / x if x > 1e-6 else 1.0 - 0.5 * x
@@ -230,14 +298,15 @@ def solve_zonal(d, bank, s_ch=None, contact=None, heat_map=None,
                     np.add.at(S_bay[pidx], col_bay,
                               (a10 * dTc - a11 * Tb_bar) * dz
                               + a11 * dz * Tp)
-                    # S collects q_p at the CURRENT Tf; convert to the
-                    # Tf-independent part: q_p = S0 + W.Tf with
-                    # S0 = S - W.Tf_current, handled after the sweep.
+                    if gw > 0:
+                        qw = gw * (Tw_g - Tb_bar) * dz   # oil view (<0)
+                        q_bare_new[pidx] += float(np.sum(-qw))
                 else:
                     Q_case_new += float(np.sum(-qp))
             Tb_new[i] = Tbi
             Pch[i] = Pdecay
         Tb = Tb + relax * (Tb_new - Tb)
+        q_bare_gap = q_bare_gap + relax * (q_bare_new - q_bare_gap)
 
         # ---- 3. plenum: closed-form recirculation fixed point ----
         m_all = np.maximum(mdot_col, 1e-9)[:, None] * np.ones((1, nc))
@@ -259,56 +328,75 @@ def solve_zonal(d, bank, s_ch=None, contact=None, heat_map=None,
             T_cell = np.clip(T_cell, d["T_in"] - 10, 140.0)
 
         # ---- 5. plate faces: closed form vs the root chain ----
-        # q_root(Tf) = -(S0 + W Tf) = (Tf - Tw)/Rr
         S0 = S_bay - W_bay * Tf
         Tw_bay = T_wat.T                              # (n_gap, n_t)
         Tf_new = (Tw_bay / Rr - S0) / (W_bay + 1.0 / Rr)
         Tf += 0.7 * (np.clip(Tf_new, d["T_in"] - 5, 120.0) - Tf)
         q_root = (Tf - Tw_bay) / Rr
 
-        # ---- 6. water march ----
+        # ---- 6. water march (root heat + optional bare-tube heat) ----
+        q_bare_pt = q_bare_gap / max(n_t, 1)          # per tube per gap
         for t in range(n_t):
             Tw = d["T_in"]
             for p in range(n_gap):
                 T_wat[t, p] = Tw
-                Tw += q_root[p, t] / (mdot_w * WATER["cp"])
+                Tw += (q_root[p, t] + q_bare_pt[p]) / (mdot_w
+                                                       * WATER["cp"])
                 Tw = min(max(Tw, d["T_in"] - 5), 95.0)
 
         Qg = float(np.sum(q_cell0 * hm * np.exp(
             -d["k_dcir"] * (np.clip(T_cell, -10, 130) - 25))))
-        Q_out = float(np.sum(q_root)) + Q_case_new
+        Q_out = float(np.sum(q_root)) + float(q_bare_gap.sum()) \
+            + Q_case_new
         closure = (Qg - Q_out) / max(Qg, 1e-9)
         if it > 10 and abs(closure) < tol:
             break
 
     Q_gen = float(np.sum(q_cell0 * hm * np.exp(
         -d["k_dcir"] * (np.clip(T_cell, -10, 130) - 25))))
-    Q_water = float(np.sum(q_root))
+    q_cell_map = q_cell0 * hm * np.exp(
+        -d["k_dcir"] * (np.clip(T_cell, -10, 130) - 25))
+    Q_water = float(np.sum(q_root)) + float(q_bare_gap.sum())
     Q_case = Q_case_new
     P_pump = float(np.sum(mdot_col * nc / rho * d["dp_extra"]) / 0.35)
-    return dict(T_cell=T_cell, Tb=Tb, Tf=Tf, T_wat=T_wat,
+
+    # F10: superpose the core-to-can rise and report peak CORE temp.
+    R_core = 1.0 / (4.0 * math.pi * d.get("k_rad", 0.9) * H)
+    T_core = T_cell + q_cell_map * R_core
+    return dict(T_cell=T_cell, T_core=T_core, Tb=Tb, Tf=Tf, T_wat=T_wat,
                 T_plen=T_plen, P_pump=P_pump, mdot_col=mdot_col,
                 ubar=ubar, s_ch=s_ch, lay=lay, q_root=q_root,
                 Q_gen=Q_gen, Q_water=Q_water, Q_case=Q_case,
+                Q_bare=float(q_bare_gap.sum()), UA_bare=UA_bare,
+                h_w=h_w, water_regime=water_regime, R_core=R_core,
                 closure=(Q_gen - Q_water - Q_case) / max(Q_gen, 1e-9),
                 T_max=float(T_cell.max()),
+                T_core_max=float(T_core.max()),
                 T_mean=float(T_cell.mean()),
                 spread=float(T_cell.max() - T_cell.min()),
                 iters_used=it + 1, zs=z)
 
 
 def monte_carlo(d, bank, M=150, sigma_s=0.2e-3, sigma_c=0.08,
-                heat_map=None, nz=10, iters=35, seed=7,
-                progress=None):
+                heat_map=None, nz=10, iters=60, seed=7,
+                progress=None, tol=0.0015):
     """Tolerance Monte Carlo: per-channel slot widths and per-root
-    contact quality sampled from truncated normals; every sample is a
-    full network solve warm-started from the converged nominal case."""
+    contact quality from truncated normals; every sample is a full
+    network solve warm-started from the converged nominal case.
+
+    Statistics are reported honestly (red-team F6): the sample spread is
+    quoted with the caveat that it is at or below solver residue, and a
+    zero-exceedance count is converted to a 95% upper bound via the rule
+    of three (3/M). sigma_s is applied per channel, i.e. one correlated
+    defect along the full slot length."""
     rng = np.random.default_rng(seed)
     n_ch = 2 * (d["n_rows"] - 1) + 2
-    lay = derived_layout(d, 150.0)
-    base = solve_zonal(d, bank, heat_map=heat_map, nz=nz, iters=240,
-                       tol=0.002)
+    hf = h_face_design(d, bank)
+    lay = derived_layout(d, hf)
+    base = solve_zonal(d, bank, heat_map=heat_map, nz=nz, iters=260,
+                       tol=0.0008)
     Tmax = np.empty(M); spread = np.empty(M); clos = np.empty(M)
+    Tcore = np.empty(M)
     for m in range(M):
         s = np.clip(rng.normal(d["s_nom"], sigma_s, n_ch),
                     0.55 * d["s_nom"], 1.7 * d["s_nom"])
@@ -317,14 +405,19 @@ def monte_carlo(d, bank, M=150, sigma_s=0.2e-3, sigma_c=0.08,
                     0.15, 1.0)
         r = solve_zonal(d, bank, s_ch=s, contact=c,
                         heat_map=heat_map, nz=nz, iters=iters,
-                        tol=0.004, init=base)
+                        tol=tol, init=base)
         Tmax[m] = r["T_max"]; spread[m] = r["spread"]
-        clos[m] = abs(r["closure"])
+        Tcore[m] = r["T_core_max"]; clos[m] = abs(r["closure"])
         if progress is not None:
             progress((m + 1) / M)
-    return dict(Tmax=Tmax, spread=spread, base=base,
+    n_exceed = int(np.sum(Tmax > d["T_limit"]))
+    p_exceed = n_exceed / M
+    # rule of three: 0/M gives a 95% upper bound of 3/M
+    p_ub95 = (3.0 / M) if n_exceed == 0 else None
+    return dict(Tmax=Tmax, spread=spread, Tcore=Tcore, base=base,
                 closure_worst=float(clos.max()),
-                p_exceed=float(np.mean(Tmax > d["T_limit"])))
+                p_exceed=p_exceed, n_exceed=n_exceed, M=M,
+                p_ub95=p_ub95, tol=tol)
 
 
 def default_d(nr=33, nc=33, C=2.0):
@@ -334,4 +427,60 @@ def default_d(nr=33, nc=33, C=2.0):
                 T_in=20.0, flow_lpm=10.0, tube_od=0.010,
                 tube_wall=0.0008, k_tube=385.0, T_amb=25.0, h_ext=5.0,
                 A_case=1.2, nu25=9e-6, B=3200.0, rho=920.0, cp=2000.0,
-                k_oil=0.13, beta=7.5e-4, dp_extra=25.0, T_limit=45.0)
+                k_oil=0.13, beta=7.5e-4, dp_extra=25.0, T_limit=45.0,
+                h_contact=8000.0, collar_factor=6.0, k_rad=0.9,
+                wetted_tube_frac=0.0, h_oil_tube=150.0)
+
+
+# ------------------------------------------------------------------ #
+#  Shakedown (red-team F9: the __main__ the handover promised)        #
+# ------------------------------------------------------------------ #
+if __name__ == "__main__":
+    import time
+    t0 = time.time()
+    bank = KernelBank(D=0.021, pitch=0.0215,
+                      s_grid=(0.0016, 0.002, 0.0026), n=70, nz=60)
+    print(f"kernel bank (3 slots): {time.time() - t0:.1f} s")
+
+    d = default_d(nr=10, nc=10, C=2.0)
+    r = solve_zonal(d, bank, nz=10, iters=120)
+    print(f"\nmini 10x10 : T_max {r['T_max']:.2f}  T_core {r['T_core_max']:.2f}"
+          f"  spread {r['spread']:.2f}  closure {r['closure']*100:.2f}%"
+          f"  tubes {r['lay']['n_tubes']}")
+
+    d = default_d(nr=33, nc=33, C=2.0)
+    t1 = time.time()
+    r = solve_zonal(d, bank, nz=10, iters=260)
+    r2 = solve_zonal(d, bank, nz=16, iters=40, init=r)
+    lay = r["lay"]
+    print(f"full 33x33 : T_max {r['T_max']:.2f}  T_core {r['T_core_max']:.2f}"
+          f"  mean {r['T_mean']:.2f}  spread {r['spread']:.2f}"
+          f"  [{time.time() - t1:.1f} s]")
+    print(f"  closure {r['closure']*100:.3f}%  z-check nz10-vs-16 "
+          f"{abs(r['T_max'] - r2['T_max']):.3f} C")
+    print(f"  layout: h_face {lay['h_face']:.0f} W/m2K -> m {lay['m']:.1f}/m"
+          f"  {lay['n_tubes']} tubes (every {lay['cells_per_tube']} cells)"
+          f"  eta {lay['eta_bay']:.3f}")
+    print(f"  water {r['h_w']:.0f} W/m2K ({r['water_regime']})  "
+          f"energy: gen {r['Q_gen']:.0f} = water {r['Q_water']:.0f} + "
+          f"case {r['Q_case']:.0f} W")
+
+    # buoyancy reference check (F1): near-zero net head at default
+    Tbar = r["Tb"].mean(axis=(1, 2)).mean()
+    head = d["rho"] * d["beta"] * 9.81 * max(Tbar - r["T_plen"], 0) * d["h_cell"]
+    print(f"\nF1 buoyancy: riser-return dT {Tbar - r['T_plen']:+.3f} C -> "
+          f"net head {head:.2f} Pa of {d['dp_extra']} Pa pump (was ~9 Pa)")
+
+    # h_c sensitivity (F2)
+    print("\nF2 h_contact sweep (T_max):")
+    for hc in (20000, 8000, 4000, 2000):
+        rc = solve_zonal(dict(d, h_contact=hc), bank, nz=10, iters=200)
+        print(f"  h_c {hc:6d} W/m2K -> {rc['T_max']:.2f} C")
+
+    # optional oil->tube bypass (F3)
+    rb = solve_zonal(dict(d, wetted_tube_frac=0.5), bank, nz=10, iters=200)
+    print(f"\nF3 oil->tube bypass (frac 0.5): UA {rb['UA_bare']:.1f} W/K, "
+          f"T_max {r['T_max']:.2f} -> {rb['T_max']:.2f} C "
+          f"(Q_bare {rb['Q_bare']:.0f} W)")
+
+    print("\nSHAKEDOWN OK  (%.0f s total)" % (time.time() - t0))

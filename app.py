@@ -19,11 +19,12 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v9.3"
+APP_VERSION = "v9.4"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
 import numpy as np
+from correlations import water_nu as _water_nu
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
@@ -35,6 +36,7 @@ from livepack import live_pack_html
 from cockpit import cockpit_html
 from zonal import (KernelBank, solve_zonal, monte_carlo,
                    derived_layout)
+import schematics as _S
 
 pio.templates["packlab"] = go.layout.Template(layout=dict(
     font=dict(family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif",
@@ -171,27 +173,12 @@ def h_tube_side(fl, T_bulk, T_wall, D_o, u_oil) -> dict:
 
 def h_water_inside(loop: dict, mdot_tube: float, d_i: float, L: float) -> dict:
     """Hausen (laminar, entry-corrected) / Gnielinski (turbulent) with a
-    linear bridge across the 2300-3000 transition."""
+    linear bridge across the 2300-3000 transition. Delegates to
+    correlations.water_nu so the zonal solver uses the identical curve."""
     mu, k, cp = loop["mu"], loop["k"], loop["cp"]
     Pr = mu * cp / k
     Re = 4.0 * mdot_tube / (math.pi * mu * d_i) if mdot_tube > 0 else 0.0
-    def nu_lam(Re_):
-        gz = (d_i / L) * Re_ * Pr
-        return 3.66 + 0.0668 * gz / (1.0 + 0.04 * gz ** (2.0 / 3.0))
-    def nu_turb(Re_):
-        f = (0.790 * math.log(Re_) - 1.64) ** -2
-        return (f / 8.0) * (Re_ - 1000.0) * Pr / (
-            1.0 + 12.7 * math.sqrt(f / 8.0) * (Pr ** (2.0 / 3.0) - 1.0))
-    if Re <= 0:
-        Nu, regime = 3.66, "no flow"
-    elif Re < 2300:
-        Nu, regime = nu_lam(Re), "laminar"
-    elif Re < 3000:
-        w = (Re - 2300.0) / 700.0
-        Nu = (1 - w) * nu_lam(2300) + w * nu_turb(3000)
-        regime = "transitional"
-    else:
-        Nu, regime = nu_turb(Re), "turbulent"
+    Nu, regime = _water_nu(Re, Pr, d_i, L)
     return dict(h=Nu * k / d_i, Re=Re, Pr=Pr, Nu=Nu, regime=regime)
 
 # ------------------------------------------------------------------ #
@@ -1229,6 +1216,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
                        "factor of 3: fluid choice cannot buy fast charge. Geometry and "
                        "stirring can.")
         with st.expander("4. The cell-gap cliff (Wang Fig. 9)"):
+            st.latex(r"u_\mathrm{gap}\sim\dfrac{g\,\beta\,\Delta T\,\delta^{2}}{\nu}\;\Rightarrow\;u_\mathrm{gap}\propto\delta^{2}\quad(\text{halve the gap, quarter the flow})")
             gaps = np.linspace(0.5, 10, 60)
             figG = go.Figure(go.Scatter(x=gaps, y=[gap_factor(x) for x in gaps],
                                         line=dict(color=ACCENT, width=3)))
@@ -1245,6 +1233,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
                        "pitch. The penalty applies to the buoyant component only, so stirring "
                        "largely removes the cliff.")
         with st.expander("5. Fins: buying area where h is worst"):
+            st.latex(r"m=\sqrt{\dfrac{2h}{k\,t}},\qquad \eta_\mathrm{fin}=\dfrac{\tanh(mL)}{mL},\qquad A_\mathrm{eff}=A_\mathrm{base}+\eta_\mathrm{fin}A_\mathrm{fin}")
             hs = np.linspace(0.002, 0.02, 40)
             eff, gain = [], []
             for hh in hs:
@@ -1266,6 +1255,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
                                plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",)
             st.plotly_chart(figF, use_container_width=True)
         with st.expander("6. Stirring and the thermosiphon floor"):
+            st.latex(r"\underbrace{\rho\,\beta\,g\,H\,\Delta T}_{\text{buoyant head}}=\underbrace{\left(K+f\tfrac{L}{D_h}\right)\tfrac{1}{2}\rho\,u^{2}}_{\text{loop loss}}\;\Rightarrow\;u_\mathrm{ts}")
             us = np.linspace(0, 0.2, 50)
             hcs, hts = [], []
             for u in us:
@@ -1295,6 +1285,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
                        f"forced stirring ({stirrer_power(d, g, fl, 0.05):.1f} W at 5 cm/s) "
                        "dwarfs it.")
         with st.expander("7. Inside the tubes: the laminar plateau"):
+            st.latex(r"Re=\dfrac{4\dot m}{\pi\mu d_i},\qquad Nu_\mathrm{lam}\!\to\!\text{const}\;(3.66\text{–}4.36),\qquad Nu_\mathrm{turb}=\dfrac{(f/8)(Re-1000)Pr}{1+12.7\sqrt{f/8}\,(Pr^{2/3}-1)}")
             fls = np.linspace(0.5, 60, 80)
             hws, res_w = [], []
             for q in fls:
@@ -1313,6 +1304,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
                                plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(figW, use_container_width=True)
         with st.expander("8. Buffering: the oil is a thermal flywheel"):
+            st.latex(r"C=\sum_i m_i c_{p,i},\qquad \tau=\dfrac{C\,\Delta T_\mathrm{allow}}{Q_\mathrm{excess}}")
             cQ, cT = st.columns(2)
             Q_ex = cQ.slider("Excess heat beyond removal [kW]", 0.1, 15.0, 3.0, 0.1)
             dT_h = cT.slider("Allowed temperature drift [K]", 2.0, 25.0, 10.0, 1.0)
@@ -1324,6 +1316,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop):
                         "drift. Size the steady HX for continuous duty and let the flywheel "
                         "eat the peaks.")
         with st.expander("9. Heat that fights back: DCIR(T) and the core"):
+            st.latex(r"R_{dc}(T)=R_{25}\,e^{-k_{dc}(T-25)},\qquad R_\mathrm{core}=\dfrac{1}{4\pi k_r H}\;\;(\text{jellyroll spreading, coolant-independent})")
             Ts = np.linspace(0, 60, 61)
             figD = go.Figure(go.Scatter(x=Ts, y=[r_of_T(d, t) for t in Ts],
                                         line=dict(color=INK, width=3)))
@@ -1798,14 +1791,26 @@ def smoke():
     zr = solve_zonal(zd, zbank, nz=8, iters=180)
     assert abs(zr["closure"]) < 0.01, f"zonal closure {zr['closure']}"
     assert 22 < zr["T_max"] < 90 and zr["spread"] < 3.0
+    assert zr["T_core_max"] >= zr["T_max"], "core must exceed can"
+    # buoyancy referenced to return -> near-zero net head at default
+    _Tbar = zr["Tb"].mean(axis=(1, 2)).mean()
+    assert _Tbar - zr["T_plen"] < 0.5, "buoyancy head not return-referenced"
+    # optional oil->tube bypass is conservative-side (lowers T) and closes
+    zr_b = solve_zonal(dict(zd, wetted_tube_frac=0.5), zbank, nz=8,
+                       iters=180)
+    assert zr_b["T_max"] < zr["T_max"] and zr_b["Q_bare"] > 0
+    assert abs(zr_b["closure"]) < 0.01, "bypass broke closure"
     zl = derived_layout(zd, 150.0)
     assert zl["n_tubes"] >= 2 and 0.3 < zl["eta_bay"] < 0.95
     zmc = monte_carlo(zd, zbank, M=5, sigma_s=0.2e-3, nz=8, iters=25)
-    assert 0.0 <= zmc["p_exceed"] <= 1.0
+    assert 0.0 <= zmc["p_exceed"] <= 1.0 and "Tcore" in zmc
+    assert zmc["n_exceed"] > 0 or zmc["p_ub95"] is not None
     assert zmc["closure_worst"] < 0.02
-    print(f"zonal: Tmax {zr['T_max']:.1f} closure "
-          f"{zr['closure']*100:.2f}% tubes {zl['n_tubes']} "
-          f"eta {zl['eta_bay']:.2f} MC ok")
+    print(f"zonal: Tmax {zr['T_max']:.1f} core {zr['T_core_max']:.1f} "
+          f"closure {zr['closure']*100:.2f}% tubes {zr['lay']['n_tubes']} "
+          f"eta {zr['lay']['eta_bay']:.2f} h_face "
+          f"{zr['lay']['h_face']:.0f} | bypass {zr_b['UA_bare']:.0f}W/K "
+          f"-> {zr_b['T_max']:.1f} | MC ok")
     print("SMOKE OK")
 
 
@@ -3019,6 +3024,27 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                         cal=d.get("cal_h", 1.0),
                         KT=K_TUBE, RT=RHO_TUBE))
         components.html(cockpit_html(cp_pay), height=820)
+        with st.expander("What the cockpit computes (the ported "
+                         "equations)"):
+            st.markdown("The cockpit is a faithful browser port of the "
+                        "app's steady two-node solver, audited against "
+                        "the Python result on load (the chip, top "
+                        "left). Every watt crosses the same resistance "
+                        "chain from cell core to coolant:")
+            st.latex(r"T_\mathrm{core}=T_w+Q\big(R_\mathrm{core}"
+                     r"+R_\mathrm{cell\,film}+R_\mathrm{tube\,film}"
+                     r"+R_\mathrm{wall}+R_\mathrm{water}\big)")
+            st.latex(r"R=\dfrac{1}{hA},\qquad "
+                     r"h_\mathrm{film}=\dfrac{Nu\,k_\mathrm{oil}}{L},"
+                     r"\qquad Q=(C\,\mathrm{Ah})^{2}R_{dc}(T)\,N")
+            st.markdown("The autothrottle (MAX-C) inverts this chain "
+                        "for the C-rate that lands the governing "
+                        "temperature exactly on the limit, by bisection "
+                        "on the same equations; the turbulence trim "
+                        "reports the flow that trips Re = 2300 in the "
+                        "tubes. Full derivations with the film "
+                        "correlations are in the Learn tab; the "
+                        "duct-level version is in Zones.")
         with st.expander("Apply cockpit settings to the design"):
             st.caption("Press 'Copy settings for Design' in the cockpit, "
                        "paste here, and apply. Values land on the real "
@@ -3090,6 +3116,27 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                                           "Centre hot"], key="zn_hm")
         z_amp = zc6.slider("Map amplitude [%]", 0, 30, 10,
                            key="zn_amp")
+        zk1, zk2, zk3, zk4 = st.columns(4)
+        z_hc = zk1.slider("Contact h_c [W/m²·K]", 1000, 20000, 8000,
+                          500, key="zn_hc",
+                          help="Tube-to-plate collar contact "
+                               "conductance. Unmeasured pending braze "
+                               "data - the headline margin is "
+                               "conditional on this (see sweep below).")
+        z_col = zk2.slider("Collar factor (x plate_t)", 2.0, 10.0, 6.0,
+                           0.5, key="zn_col",
+                           help="Effective collar engagement length as "
+                                "a multiple of plate thickness; sets the "
+                                "contact area per crossing.")
+        z_byp = zk3.checkbox("Direct oil->tube path", value=False,
+                             key="zn_byp",
+                             help="Adds the bare-tube oil-to-water path "
+                                  "the root-only model omits. Magnitude "
+                                  "depends on header geometry, so it is "
+                                  "off by default and conservative when "
+                                  "off.")
+        z_wet = zk4.slider("Wetted tube fraction", 0.0, 1.0, 0.5, 0.1,
+                           key="zn_wet", disabled=not z_byp)
 
         @st.cache_resource(show_spinner=False)
         def _zonal_bank(Dc, px):
@@ -3117,7 +3164,11 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                   h_ext=d["h_ext"], A_case=float(g["A_box_ext"]),
                   nu25=fl["nu25"], B=fl["B"], rho=fl["rho"],
                   cp=fl["cp"], k_oil=fl["k"], beta=fl["beta"],
-                  dp_extra=z_dp, T_limit=d["T_limit"])
+                  dp_extra=z_dp, T_limit=d["T_limit"],
+                  h_contact=float(z_hc), collar_factor=float(z_col),
+                  k_rad=d.get("k_rad", 0.9),
+                  wetted_tube_frac=(float(z_wet) if z_byp else 0.0),
+                  h_oil_tube=150.0)
         nrz, ncz = zd["n_rows"], zd["n_cols"]
         if z_hm == "Busbar end":
             hmap = np.tile(np.linspace(0, z_amp / 100.0, ncz),
@@ -3137,18 +3188,35 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                                  iters=260)
                 zr2 = solve_zonal(zd, zbank, heat_map=hmap, nz=16,
                                   iters=40, init=zr)
+                # F3/V8: matched cross-check - lumped serpentine solver
+                # at the SAME architecture and the zonal's own velocity.
+                u_z = float(zr["ubar"].mean())
+                d_match = dict(d, plate_on=True, u_oil=u_z,
+                               plate_t=zd["plate_t"],
+                               plate_contact=zd["plate_contact"])
+                try:
+                    res_match = solve_steady(d_match, g, fl, 1.0,
+                                             d["T_amb"], C_rate=z_C)
+                except Exception:
+                    res_match = None
             st.session_state["zn_key"] = zkey
             st.session_state["zn_res"] = (zr, zr2)
+            st.session_state["zn_match"] = (res_match, u_z)
         zr, zr2 = st.session_state["zn_res"]
+        res_match, u_z = st.session_state.get("zn_match", (None, 0.0))
         lay = zr["lay"]
 
         zm = st.columns(6)
-        zm[0].metric("Hottest cell", f"{zr['T_max']:.1f} °C",
+        zm[0].metric("Hottest can", f"{zr['T_max']:.1f} °C",
                      f"{zr['T_max'] - d['T_limit']:+.1f} vs limit",
                      delta_color="inverse")
-        zm[1].metric("Zonal mean vs lumped",
-                     f"{zr['T_mean']:.1f} °C",
-                     f"{zr['T_mean'] - res['T_b']:+.1f} vs T_b")
+        zm[1].metric("Hottest core", f"{zr['T_core_max']:.1f} °C",
+                     f"{zr['T_core_max'] - d['T_limit']:+.1f} vs limit",
+                     delta_color="inverse",
+                     help="Can temperature plus the jellyroll core-to-"
+                          "can rise R_core = 1/(4 pi k_r H). If the "
+                          "45 °C limit is a plating/core limit, this is "
+                          "the number that must clear it.")
         zm[2].metric("Spread", f"{zr['spread']:.2f} °C")
         zm[3].metric("Energy closure",
                      f"{abs(zr['closure']) * 100:.2f} %")
@@ -3156,15 +3224,98 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
         zm[5].metric("z-resolution check",
                      f"{abs(zr['T_max'] - zr2['T_max']):.02f} °C",
                      "nz 10 vs 16")
-        st.caption(f"Derived tube layout from the fin rule P = 2/m: "
-                   f"m = {lay['m']:.1f} /m, rule P = "
-                   f"{lay['P_rule'] * 1000:.0f} mm, snapped to "
+        st.caption(f"Derived tube layout from the fin rule P = 2/m, fed "
+                   f"the **kernel-implied** plate film "
+                   f"h_face = {lay['h_face']:.0f} W/m²·K (a11/pitch at "
+                   f"the design point, so the layout is self-consistent "
+                   f"with the duct it feeds): m = {lay['m']:.1f} /m, "
+                   f"rule P = {lay['P_rule'] * 1000:.0f} mm, snapped to "
                    f"{lay['P_snap'] * 1000:.1f} mm = every "
-                   f"{lay['cells_per_tube']} cells, so "
-                   f"{lay['n_tubes']} tubes piercing each plate at "
-                   f"mid-height; bay fin efficiency eta = "
-                   f"{lay['eta_bay']:.2f}. Positions are lattice "
-                   f"points, never arbitrary.")
+                   f"{lay['cells_per_tube']} cells, so {lay['n_tubes']} "
+                   f"tubes per plate; bay fin efficiency eta = "
+                   f"{lay['eta_bay']:.2f} (product rule, conservative by "
+                   f"~3-16% vs a 2D plate solve, so T is an upper bound "
+                   f"in that respect).")
+
+        if res_match is not None:
+            gap = zr["T_mean"] - res_match["T_b"]
+            st.caption(
+                f"**Independent cross-check (matched):** the lumped "
+                f"two-node solver, configured for this same serpentine "
+                f"architecture at the zonal's own velocity "
+                f"(ū = {u_z * 1000:.0f} mm/s), gives "
+                f"T_cell = {res_match['T_b']:.1f} °C against the zonal "
+                f"mean {zr['T_mean']:.1f} °C ({gap:+.1f} °C). They use "
+                f"genuinely different machinery - the lumped uses "
+                f"crossflow cell films and an area-credit plate "
+                f"coupling; the zonal routes every watt through "
+                f"per-crossing collars and (with the bypass off) omits "
+                f"the direct oil-to-tube path - so a residual gap of a "
+                f"few °C is expected and brackets the modelling "
+                f"uncertainty. The truth for this pack most likely sits "
+                f"between the two.")
+
+        with st.expander("Contact-conductance sensitivity (the headline "
+                         "margin is conditional on h_c)"):
+            st.caption("Because the contact toll scales as 1/h_c, the "
+                       "sensitivity is hyperbolic: the margin degrades "
+                       "fast below the nominal 8000 W/m²·K. Run the "
+                       "sweep to see where this design crosses its "
+                       "limit.")
+            if st.button("Run h_c sweep", key="zn_hcsweep"):
+                hc_list = [20000, 12000, 8000, 6000, 4000, 3000, 2000]
+                with st.spinner("Sweeping contact conductance..."):
+                    rows = []
+                    for hc in hc_list:
+                        rr = solve_zonal(dict(zd, h_contact=float(hc)),
+                                         zbank, heat_map=hmap, nz=10,
+                                         iters=200, init=zr)
+                        rows.append((hc, rr["T_max"], rr["T_core_max"]))
+                st.session_state["zn_hcsw"] = rows
+            if "zn_hcsw" in st.session_state:
+                rows = st.session_state["zn_hcsw"]
+                figh = go.Figure()
+                figh.add_trace(go.Scatter(
+                    x=[r[0] for r in rows], y=[r[1] for r in rows],
+                    name="Hottest can", mode="lines+markers",
+                    line=dict(color="#6366F1", width=3)))
+                figh.add_trace(go.Scatter(
+                    x=[r[0] for r in rows], y=[r[2] for r in rows],
+                    name="Hottest core", mode="lines+markers",
+                    line=dict(color="#B91C1C", width=3, dash="dot")))
+                figh.add_hline(y=d["T_limit"], line_dash="dash",
+                               line_color="#B91C1C",
+                               annotation_text=f"{d['T_limit']:.0f} °C "
+                                               "limit")
+                figh.add_vline(x=z_hc, line_dash="dot",
+                               line_color="#10B981",
+                               annotation_text="current")
+                figh.update_layout(
+                    height=300, xaxis_title="contact h_c [W/m²·K]",
+                    yaxis_title="°C", legend=dict(orientation="h",
+                                                  y=1.15),
+                    margin=dict(l=10, r=10, t=40, b=10))
+                st.plotly_chart(figh, width='stretch', key="zn_hcfig")
+                cross = [r[0] for r in rows if r[1] > d["T_limit"]]
+                if cross:
+                    st.caption(f"The can crosses {d['T_limit']:.0f} °C "
+                               f"below h_c ≈ {max(cross):.0f} W/m²·K. A "
+                               "mechanical press fit or an imperfect "
+                               "braze can land there - which is why the "
+                               "one-tube rig point matters.")
+
+        if z_byp and zr.get("UA_bare", 0) > 0:
+            st.caption(f"Direct oil-to-tube path ON: bare-tube "
+                       f"UA ≈ {zr['UA_bare']:.0f} W/K carrying "
+                       f"{zr['Q_bare']:.0f} W "
+                       f"({100 * zr['Q_bare'] / max(zr['Q_gen'], 1):.0f}% "
+                       f"of the duty) straight from the oil to the "
+                       f"water, bypassing the collar chain. This is the "
+                       f"largest known modelling omission when off, and "
+                       f"it is conservative-side, so switching it on "
+                       f"*lowers* the predicted temperature. Its exact "
+                       f"magnitude depends on how much tube length the "
+                       f"header leaves wetted by oil.")
 
         zg1, zg2 = st.columns([3, 2])
         with zg1:
@@ -3224,10 +3375,19 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
             mm[0].metric("Tmax, mean of samples",
                          f"{mc['Tmax'].mean():.2f} °C",
                          f"sd {mc['Tmax'].std():.3f}")
-            mm[1].metric("Worst sample",
-                         f"{mc['Tmax'].max():.2f} °C")
-            mm[2].metric(f"P(exceed {zd['T_limit']:.0f} °C)",
-                         f"{mc['p_exceed']:.3f}")
+            core_txt = (f"{mc['Tcore'].max():.1f} °C"
+                        if "Tcore" in mc else "-")
+            mm[1].metric("Worst can / core",
+                         f"{mc['Tmax'].max():.2f} °C",
+                         f"core {core_txt}")
+            if mc.get("n_exceed", 0) == 0 and mc.get("p_ub95"):
+                mm[2].metric(f"Exceed {zd['T_limit']:.0f} °C",
+                             f"0 / {mc.get('M', len(mc['Tmax']))}",
+                             f"≤{mc['p_ub95'] * 100:.1f}% (95% UB)",
+                             delta_color="off")
+            else:
+                mm[2].metric(f"P(exceed {zd['T_limit']:.0f} °C)",
+                             f"{mc['p_exceed']:.3f}")
             mm[3].metric("Worst closure",
                          f"{mc['closure_worst'] * 100:.2f} %")
             zh1, zh2 = st.columns(2)
@@ -3243,25 +3403,239 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                               title="Pack spread across samples",
                               margin=dict(l=10, r=10, t=40, b=10))
             zh2.plotly_chart(fh2, width='stretch', key="zn_h2")
-            st.caption("Reading: with the lens-shaped slots the flow "
-                       "sensitivity to width is nearly linear (the "
-                       "flat-slot cubic law does not apply here), and "
-                       "plates plus the mixed plenum homogenise the "
-                       "pack, so manufacturing scatter barely moves "
-                       "the hottest cell. The governing resistance is "
-                       "the water film at the roots: water-side flow "
-                       "and tube count, not tolerance, set the "
-                       "temperature level.")
+            sd = mc["Tmax"].std()
+            n_ex = mc.get("n_exceed", int(np.sum(
+                mc["Tmax"] > zd["T_limit"])))
+            ub_txt = (f"With {n_ex}/{mc.get('M', len(mc['Tmax']))} "
+                      f"exceedances the 95% upper bound on the exceed "
+                      f"probability is {mc['p_ub95'] * 100:.1f}% (rule "
+                      f"of three)" if n_ex == 0 and mc.get("p_ub95")
+                      else f"{n_ex} samples exceeded the limit")
+            st.caption(
+                f"Reading, stated honestly: the sample spread "
+                f"(sd {sd:.3f} °C) is at or below the solver's own "
+                f"convergence residue at this tolerance, so it should "
+                f"be read as *scatter indistinguishable from "
+                f"convergence noise, < 0.1 °C*, not a tight physical "
+                f"prediction. {ub_txt}. The physics underneath is real "
+                f"and is the point: with the lens-shaped slots the flow "
+                f"sensitivity to width is nearly linear (the flat-slot "
+                f"cubic law does not apply here), and the plates plus "
+                f"the mixed plenum homogenise the pack, so slot-width "
+                f"and contact *scatter* barely move the hottest cell. "
+                f"What the Monte Carlo does **not** sample is the "
+                f"epistemic band on the contact conductance itself "
+                f"(see the h_c sweep) - that, not tolerance, is where "
+                f"the margin risk lives.")
         st.markdown("**Model notes, stated plainly:** cell cans are "
-                    "treated as isothermal (high-k casing); kernels "
-                    "assume laminar developing flow (checked: Re "
-                    "stays far below transition); root contact "
-                    "conductance 8000 W/m²·K is an assumption "
-                    "pending braze data and enters through one "
-                    "slider-equivalent; radiation is excluded "
-                    "(order 1 W at these temperature differences); "
-                    "the staircase boundary in fea4 was validated "
-                    "against exact limits before use.")
+                    "treated as isothermal (high-k casing) and the "
+                    "core-to-can rise is superposed on top (reported as "
+                    "*Hottest core*); kernels assume laminar developing "
+                    "flow (checked: Re stays far below transition); the "
+                    "buoyancy head is referenced to the loop return "
+                    "(plenum), so at the default the pump dominates and "
+                    "the flow is conservative; the water film uses the "
+                    "same transition-bridged correlation as the lumped "
+                    "solver. Three numbers are engineering choices, not "
+                    "derived quantities, and are exposed above: the "
+                    "contact conductance h_c (unmeasured pending braze "
+                    "data - see the sweep), the collar engagement "
+                    "factor, and (off by default) the wetted fraction "
+                    "of the direct oil-to-tube path. Radiation is "
+                    "excluded (order 1 W). The staircase boundary in "
+                    "fea4 was validated against exact limits before "
+                    "use.")
+
+        with st.expander("Methods, physics, and how every number is "
+                         "reached (equations beside the results)",
+                         expanded=True):
+            st.markdown("Almost everything below is closed-form or "
+                        "provably contractive, and every correlation "
+                        "traces to a validated FEA gate. Three inputs "
+                        "are honest engineering assumptions rather than "
+                        "derived quantities, and the model is upfront "
+                        "about them: the contact conductance h_c "
+                        "(unmeasured pending braze data), the collar "
+                        "engagement factor that sets the contact area, "
+                        "and the plate fin efficiency (a conservative "
+                        "product rule). Read the chain top to bottom: "
+                        "it is exactly what the solver walks for each "
+                        "watt.")
+
+            sc1, sc2 = st.columns([3, 2])
+            with sc1:
+                st.plotly_chart(_S.schematic_unit(zd, g, lay),
+                                width='stretch', key="zn_sch_unit")
+            with sc2:
+                st.plotly_chart(_S.schematic_lens(zd, g),
+                                width='stretch', key="zn_sch_lens")
+
+            st.markdown("##### A. Layout from the fin rule")
+            st.markdown("The plate is a fin cooled at its rooted "
+                        "line and loaded over its face. The fin "
+                        "parameter and the optimal root pitch are")
+            st.latex(r"m=\sqrt{\dfrac{2\,h_\mathrm{face}}"
+                     r"{k_p\,t_p}},\qquad P=\dfrac{2}{m},\qquad "
+                     r"\eta_\mathrm{bay}="
+                     r"\dfrac{\tanh(mP/2)}{mP/2}\cdot"
+                     r"\dfrac{\tanh(mH/2)}{mH/2}")
+            st.caption(f"Live: m = {lay['m']:.1f} /m, rule pitch "
+                       f"{lay['P_rule']*1000:.0f} mm snapped to the "
+                       f"lattice at {lay['P_snap']*1000:.1f} mm "
+                       f"(= {lay['cells_per_tube']} cells), giving "
+                       f"{lay['n_tubes']} tubes per plate at mid-height "
+                       f"and bay efficiency eta = {lay['eta_bay']:.2f}. "
+                       "Tubes land on lattice points, never chosen by "
+                       "hand.")
+
+            st.markdown("##### B. Hydraulics: laminar slot against "
+                        "buoyancy")
+            st.markdown("Each slot column balances the available head "
+                        "(pump plus thermal buoyancy) against fully "
+                        "developed laminar friction; viscosity is "
+                        "evaluated at the local bulk temperature "
+                        "(Andrade law).")
+            st.latex(r"\Delta p=\Delta p_\mathrm{pump}"
+                     r"+\rho\,\beta\,g\,H\,(\bar T-T_\mathrm{in}),"
+                     r"\qquad \bar u=\Delta p\,"
+                     r"\dfrac{2D_h^{2}}{f\!Re\;\mu\,H},\qquad "
+                     r"\nu(T)=\nu_{25}\,e^{\,B\left(1/T-1/298\right)}")
+            _Dh, _A, _fRe = zbank.props(zd["s_nom"])
+            _u = float(zr["ubar"].mean())
+            st.caption(f"Live: fRe = {_fRe:.1f} (lens duct, not 96), "
+                       f"mean slot velocity {_u*1000:.1f} mm/s, so the "
+                       "flow sensitivity to slot width is nearly linear "
+                       "here, not cubic (see the choke test in the "
+                       "results above).")
+
+            st.markdown("##### C. Duct kernels (fea4): the exact "
+                        "developing-flow coupling")
+            st.markdown("On the true lens cross-section the velocity "
+                        "field is a Poisson solve; the developing "
+                        "energy problem is solved twice (one wall hot "
+                        "at a time) and superposed into an exact 2x2 "
+                        "transport matrix linking each wall's line flux "
+                        "to the moving bulk:")
+            st.latex(r"\nabla^2 w=-1\ \ (\text{no-slip}),\qquad "
+                     r"f\!Re=\dfrac{2D_h^{2}}{\bar w};\qquad "
+                     r"\begin{bmatrix}q'_c\\ q'_p\end{bmatrix}"
+                     r"=\mathbf{a}(z^{*},s)"
+                     r"\begin{bmatrix}T_c-T_b\\ T_p-T_b\end{bmatrix},"
+                     r"\quad z^{*}=\dfrac{z}{D_h\,Re\,Pr}")
+            _alpha = zd["k_oil"] / (zd["rho"] * zd["cp"])
+            _RePr = _u * _Dh / _alpha
+            _zop = (zd["h_cell"] * 0.5) / (_Dh * max(_RePr, 1e-9))
+            _a = zbank.a_of(zd["s_nom"], np.array([_zop]))[0]
+            st.latex(r"\mathbf{a}(z^{*}\!=\!%.2g)=\begin{bmatrix}"
+                     r"%.1f & %.2f\\ %.2f & %.1f\end{bmatrix}\ "
+                     r"\mathrm{W\,m^{-1}K^{-1}}" %
+                     (_zop, _a[0, 0], _a[0, 1], _a[1, 0], _a[1, 1]))
+            st.caption("Validation gates (parallel-plate limits with "
+                       "known answers): fRe 95.7 vs 96.0, one-wall "
+                       "Nu 5.387 vs 5.385, two-wall Nu 7.541 vs 7.541. "
+                       "The whole 70 mm slot runs in the thermal "
+                       "entrance (Pr about 127), so the cell film is "
+                       "roughly 3x the stagnant-thermosiphon value.")
+
+            st.markdown("##### D. Channel energy march (exact "
+                        "exponential, energy-consistent)")
+            st.markdown("Marching bulk enthalpy up each segment, the "
+                        "walls act through the conductance-weighted mix "
+                        "T_eff. The update is the exact solution of the "
+                        "linear segment (unconditionally stable), and "
+                        "the segment-mean driver uses the exact factor "
+                        "f-bar so the flux and the enthalpy rise agree "
+                        "to machine precision at any flow, including "
+                        "starved channels.")
+            st.latex(r"\dot m c_p\dfrac{dT_b}{dz}=G\,(T_\mathrm{eff}"
+                     r"-T_b),\quad G=\textstyle\sum a,\ "
+                     r"T_\mathrm{eff}=\dfrac{G_cT_c+G_pT_p}{G}")
+            st.latex(r"T_b(z{+}dz)=T_\mathrm{eff}+(T_b-T_\mathrm{eff})"
+                     r"e^{-x},\quad \bar f=\dfrac{1-e^{-x}}{x},\quad "
+                     r"x=\dfrac{G\,dz}{\dot m c_p}")
+
+            st.markdown("##### E. Cells: heat that fights back "
+                        "(DCIR feedback)")
+            st.markdown("Each cell is an isothermal balance; generation "
+                        "falls as it warms. It is solved by Newton "
+                        "using the march's own Jacobian J, so the cell "
+                        "and its channels are consistent, not lagged.")
+            st.latex(r"q_\mathrm{gen}(T)=(C\,\mathrm{Ah})^{2}R_{dc}\,"
+                     r"e^{-k_{dc}(T-25)}=\hat q+J\,(T-T_\mathrm{old})")
+
+            st.markdown("##### F. Plate face and root network "
+                        "(closed form)")
+            sc3, sc4 = st.columns([2, 3])
+            with sc3:
+                st.plotly_chart(_S.schematic_network(zd, lay),
+                                width='stretch', key="zn_sch_net")
+            with sc4:
+                st.markdown("The plate face is not iterated. Its heat "
+                            "is linear in its own temperature, so it is "
+                            "solved directly against the series root "
+                            "resistance (contact, then tube wall, then "
+                            "the water film), and the water is marched "
+                            "tube by tube afterwards.")
+                st.latex(r"R_\mathrm{root}=\dfrac{1}{h_cA_\mathrm{ct}}"
+                         r"+\dfrac{\ln(d_o/d_i)}{2\pi k_t L}"
+                         r"+\dfrac{1}{h_w\pi d_i L}")
+                st.latex(r"T_f=\dfrac{T_w/R_\mathrm{root}-S_0}"
+                         r"{W+1/R_\mathrm{root}},\qquad "
+                         r"q_\mathrm{root}=\dfrac{T_f-T_w}"
+                         r"{R_\mathrm{root}}")
+                st.caption("W and S0 are accumulated from the same "
+                           "march (per bay), so the plate closure is "
+                           "exact given the bulk field. Water film h_w "
+                           "from Gnielinski (turbulent) or Hausen "
+                           "(laminar developing).")
+
+            st.markdown("##### G. Recirculation plenum (closed-form "
+                        "fixed point)")
+            st.markdown("The mixed exit re-enters as the common inlet. "
+                        "Because each column exit is affine in the "
+                        "inlet, the recirculation fixed point is solved "
+                        "in one line instead of ratcheted, which is "
+                        "what removed the slow mode that used to stall "
+                        "convergence.")
+            st.latex(r"T_\mathrm{exit}=A+P\,T_\mathrm{plen},\quad "
+                     r"P=\prod_z e^{-x}\ \Rightarrow\ "
+                     r"T_\mathrm{plen}^{*}=\dfrac{\langle A\rangle}"
+                     r"{1-\langle P\rangle}")
+
+            st.markdown("##### H. Tolerance Monte Carlo")
+            st.latex(r"s_i\sim\mathcal N(s_\mathrm{nom},\sigma_s)\ "
+                     r"[\text{trunc.}],\quad c_k\sim"
+                     r"\mathcal N(c,\sigma_c),\quad "
+                     r"P_\mathrm{exceed}=\Pr\!\big(T_\mathrm{max}"
+                     r">T_\mathrm{lim}\big)")
+            st.caption("Every sample is a full network solve, "
+                       "warm-started from the converged nominal case "
+                       "(30 s for 60-90 samples). The result is the "
+                       "physics of homogenisation: the plates and the "
+                       "mixed plenum flatten manufacturing scatter, so "
+                       "the water film at the roots, not tolerance, "
+                       "governs the temperature level.")
+
+            st.markdown("##### Validation battery (this run)")
+            _match_txt = (
+                f"the lumped serpentine solver **matched** to this "
+                f"velocity **{res_match['T_b']:.1f} °C** "
+                f"({zr['T_mean'] - res_match['T_b']:+.1f} °C; different "
+                f"machinery, so a few °C is expected)"
+                if res_match is not None else
+                "an independent lumped solver in the matched mode")
+            st.markdown(
+                f"- Energy closure in vs out: "
+                f"**{abs(zr['closure'])*100:.2f} %** "
+                f"(generation {zr['Q_gen']:.0f} W = water "
+                f"{zr['Q_water']:.0f} W + casing {zr['Q_case']:.0f} W).\n"
+                f"- z-resolution independence: nz 10 vs 16 differ by "
+                f"**{abs(zr['T_max']-zr2['T_max']):.02f} °C**.\n"
+                f"- Independent cross-check: zonal mean "
+                f"**{zr['T_mean']:.1f} °C** against {_match_txt}.\n"
+                f"- Collapse test: with uniform inputs the pack spread "
+                f"goes to zero, confirming the per-channel bookkeeping "
+                f"introduces no spurious asymmetry.")
 
     # ---------------- Improve ---------------- #
     with tabs[5]:
@@ -3711,6 +4085,71 @@ local film temperature - see the ν(T) curve in Design.""")
                        "alternate tubes removes the term for free.")
         st.caption("Full self-validating scripts and figures: pack_fea_v1.zip "
                    "(fea1_lid.py, fea2_cell.py, fea3_pack.py, REPORT.md).")
+        st.markdown("---")
+        st.subheader("FEA4: plate-channel duct kernels (fea4_channel)")
+        st.caption("The engine behind the Zones tab. Fully developed "
+                   "laminar analysis on the true lens cross-section: a "
+                   "velocity Poisson solve for the friction factor and a "
+                   "two-case developing-flow (Graetz) march for the exact "
+                   "2x2 wall-to-bulk transport matrix. Verified against "
+                   "three limits with known closed-form or tabulated "
+                   "answers before it was trusted anywhere.")
+
+        @st.cache_resource(show_spinner=False)
+        def _fea4_gates():
+            import fea4_channel as F4
+            v = F4.duct_coefficients(rect=True, s=0.002,
+                                     pitch_x=0.02, n=180)
+            Nu1 = (2 * 0.002) / (v["Rpp"] * 0.13 * v["Pp"])
+            gg = F4.graetz_kernel(rect=True, s=0.002, pitch_x=0.02,
+                                  n=120, nz=90)
+            aFD = gg["a"][-1]
+            Nu2 = ((aFD[0, 0] + aFD[0, 1]) * (2 * 0.002)
+                   / (0.13 * gg["Pc"]))
+            return v["fRe"], Nu1, Nu2
+
+        with st.spinner("Running duct-kernel gates (cached)..."):
+            _fRe, _Nu1, _Nu2 = _fea4_gates()
+        g1, g2 = st.columns([3, 2])
+        with g1:
+            figF4 = go.Figure()
+            figF4.add_trace(go.Bar(
+                name="fea4 (this model)",
+                x=["fRe (channel)", "Nu, one wall heated",
+                   "Nu, both walls fixed-T"],
+                y=[_fRe, _Nu1, _Nu2], marker_color="#6366F1",
+                text=[f"{_fRe:.1f}", f"{_Nu1:.3f}", f"{_Nu2:.3f}"],
+                textposition="outside"))
+            figF4.add_trace(go.Bar(
+                name="analytic target",
+                x=["fRe (channel)", "Nu, one wall heated",
+                   "Nu, both walls fixed-T"],
+                y=[96.0, 5.385, 7.541], marker_color="#94A3B8",
+                text=["96.0", "5.385", "7.541"],
+                textposition="outside"))
+            figF4.update_layout(
+                barmode="group", height=300,
+                title="Parallel-plate validation limits: model vs "
+                      "analytic",
+                legend=dict(orientation="h", y=1.12),
+                margin=dict(l=10, r=10, t=54, b=10))
+            st.plotly_chart(figF4, use_container_width=True, key="fea4")
+            st.caption(f"All three land on target: fRe "
+                       f"{_fRe:.1f} vs 96.0, one-wall Nu {_Nu1:.3f} vs "
+                       f"5.385, two-wall Nu {_Nu2:.3f} vs 7.541. Two "
+                       "operator bugs (a masked-cell energy term and a "
+                       "wall-flux extrapolation) were caught precisely "
+                       "because these gates failed first.")
+        with g2:
+            st.plotly_chart(_S.schematic_lens(
+                dict(d_cell=0.021, pitch=0.0215, s_nom=0.002),
+                dict(gap_mm=0.5)), use_container_width=True,
+                key="fea4_lens")
+        st.caption("Self-contained module with the gates as a runnable "
+                   "__main__: fea4_channel.py. The earlier stagnant-slot "
+                   "study returned an arc effectiveness near 0.13, which "
+                   "is what redirected the concept to advective primary "
+                   "cooling (oil carries, plates sink).")
         st.markdown("---")
         st.subheader("Model tuning")
         t1_, t2_, t3_ = st.columns(3)

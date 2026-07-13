@@ -402,3 +402,70 @@ renders the per-cell temperature map with derived tube lines, channel
 flow shares and per-tube water outlets, and runs a warm-started
 tolerance Monte Carlo with exceedance probability. Smoke gains zonal
 gates; all legacy tests green.
+
+## v9.3 explanation layer: equations beside every result
+The physics is no longer only in the code. The app went from 2 rendered
+equations to 21. The Zones tab gained a "Methods, physics and how every
+number is reached" panel that walks the full derivation with LaTeX
+(layout fin rule, laminar-vs-buoyancy hydraulics, the fea4 2x2 duct
+kernel, the exact exponential energy march, DCIR-coupled cell Newton,
+the closed-form plate-face and root network, the closed-form plenum
+fixed point, and the Monte Carlo), each equation sitting beside its live
+value and a one-line account of how it is obtained, plus a live
+validation battery. Three interactive labelled schematics
+(schematics.py) give the geometry symbols and the solve topology a
+picture: the plan-view plate-channel unit, the lens subchannel fea4
+meshes, and the node-and-edge solve graph. The Learn tab panels 4-9 now
+each show their governing equation (gap-velocity scaling, fin/Schmidt,
+thermosiphon head balance, laminar/turbulent tube Nu, thermal-flywheel
+time constant, DCIR and core spreading). FEA4 (the duct-kernel gates:
+fRe 95.7 vs 96, one-wall Nu 5.387 vs 5.385, two-wall Nu 7.541 vs 7.541)
+now sits with FEA1-3 in the Validate tab instead of being buried in a
+caption. The Cockpit gained a panel showing the ported resistance-chain
+equations it evaluates. A standalone REDTEAM_HANDOVER.md documents the
+whole physics stack with equations, the validation evidence classified
+for scrutiny, an assumptions register, the known soft spots, and a
+structured red-team checklist.
+
+## v9.4 red-team closure: the corrected, honest model
+v9.4 folds in a full external red-team pass on the zonal solver and Monte
+Carlo (three bugs, two oversold claims, a doc defect, a packaging break).
+The point-by-point response is in REDTEAM_RESPONSE.md. In short:
+
+- **Buoyancy bug (F1):** the buoyant head is now referenced to the loop
+  return (plenum) temperature, not the water inlet. At the default this
+  removes ~9 Pa of spurious head; the solved slot velocity drops from
+  166 to ~122-162 mm/s and the pack runs hotter and more conservatively.
+- **Water-film cliff (F5):** the zonal now shares one water-side Nusselt
+  function with the lumped solver (correlations.water_nu), with the
+  continuous 2300-3000 transition bridge; the -3.3 C step is gone.
+- **Contact conductance (F2):** h_contact and the collar engagement
+  factor are named inputs with a one-click sensitivity sweep showing
+  where the design crosses 45 C (below h_c ~ 4000-6000 W/m2K).
+- **Self-consistent layout (F4):** the fin-rule tube pitch is now fed the
+  kernel-implied plate film (a11/pitch at the design point), not a
+  hardwired 150; the derived h_face and the conservative product-rule eta
+  are shown.
+- **Matched cross-check (F3/V8):** the lumped comparison is solved in the
+  same serpentine architecture at the zonal's own velocity (~35.8 vs
+  ~41.9 C), and the misleading "agree within a fraction of a degree" line
+  is gone. The direct oil-to-tube bypass the model omitted is now an
+  explicit, bounded toggle (off by default, conservative; ~21 W/K and
+  ~15% of duty at wetted fraction 0.5).
+- **Honest Monte Carlo (F6):** tighter per-sample tolerance, the sample
+  spread labelled as convergence noise (< 0.1 C), and a rule-of-three 95%
+  upper bound quoted for zero-exceedance runs.
+- **Core temperature (F10):** the jellyroll core-to-can rise is superposed
+  and the peak CORE temperature reported next to the can (~44.5 vs 45 C at
+  the default) - so a core/plating limit is shown to be marginal.
+- **Packaging + honesty (F7-F9):** scipy added to requirements; zonal.py
+  ships a __main__ shakedown; the fea4 __main__ regime-difference line is
+  relabelled; the Methods preamble names its three assumptions instead of
+  claiming nothing is asserted; the handover's operating-point narrative
+  is corrected.
+
+The net effect is deliberately less flattering than v9.3 and more true:
+the design is marginal, and its margin depends on the unmeasured collar
+contact and on whether 45 C is a can or a core limit. The recommended
+next step is the one-tube two-crossing oil-bath rig point, which measures
+both the omitted oil-to-tube path and the contact conductance at once.
