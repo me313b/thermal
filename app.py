@@ -19,9 +19,10 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v9.1"
+APP_VERSION = "v9.3"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
+import json
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -32,6 +33,8 @@ import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from livepack import live_pack_html
 from cockpit import cockpit_html
+from zonal import (KernelBank, solve_zonal, monte_carlo,
+                   derived_layout)
 
 pio.templates["packlab"] = go.layout.Template(layout=dict(
     font=dict(family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif",
@@ -1712,30 +1715,47 @@ def smoke():
     deep = sankey_deep_dive(d, g, fl, res, masses, Q, Q_bus, 0.1, 0.0, ch,
                             d["C1"])
     cp_html = cockpit_html(dict(
-        design=dict(C1=2.0, T_amb=25.0, coolant=d["coolant"], flow_lpm=10.0,
-                    T_water_in=20.0, n_tubes=16, circ0="thermosiphon",
-                    u0=0.05, plate_t=0.0015, plate_contact=0.8,
-                    fins_on=True, pitch=d["pitch"], d_cell=d["d_cell"],
-                    h_cell=d["h_cell"], tube_od=d["tube_od"],
-                    r_dc=d["r_dc"], k_dcir=d["k_dcir"], k_rad=d["k_rad"],
-                    cap_Ah=d["cap_Ah"], h_ext=d["h_ext"], k_tube=385.0,
-                    fin_h=d["fin_h"], fin_t=d["fin_t"], fin_p=d["fin_p"],
-                    k_fin=205.0, T_limit=45.0, limit_core=False,
-                    interstitial=False),
-        geom=dict(N=g["N"], A_cells=g["A_cells"], d_i=g["d_i"],
-                  L_tube=g["L_tube"], A_box_ext=g["A_box_ext"],
-                  A_flow=g["A_flow"], D_h=g["D_h"], fill_h=g["fill_h"],
-                  H_loop=0.045, n_rows=g["n_rows"], plate_len=0.83,
-                  fill_frac=0.8, cell_top_frac=0.55, cell_bot_frac=0.04,
-                  n_rows_draw=12),
+        design=dict(C1=2.0, T_amb=25.0, coolant=d["coolant"],
+                    fmt=d["fmt"], Ns=d["Ns"], Np=d["Np"],
+                    cap_Ah=d["cap_Ah"], r_dc=d["r_dc"],
+                    k_dcir=d["k_dcir"], k_rad=d["k_rad"],
+                    pitch=d["pitch"], arrangement=d["arrangement"],
+                    tube_plane=d.get("tube_plane", "Top of pack"),
+                    flow_lpm=10.0, T_water_in=20.0, n_tubes=16,
+                    loop_fluid="Water", tube_od=d["tube_od"],
+                    tube_wall=d["tube_wall"], tube_mat=d["tube_mat"],
+                    fins_on=True, circ0="thermosiphon", u0=0.05,
+                    plate_t=0.0015, plate_contact=0.8, T_limit=45.0,
+                    limit_core=False, h_ext=d["h_ext"],
+                    edge_margin=d["edge_margin"],
+                    bottom_gap=d["bottom_gap"],
+                    tube_zone=d["tube_zone"], gas_gap=d["gas_gap"],
+                    manifold_margin=d["manifold_margin"],
+                    passes=d["passes"], end_fraction=d["end_fraction"],
+                    holder_block=d.get("holder_block", 0.25),
+                    m_holder_g=d["m_holder_g"],
+                    struct_mass=d["struct_mass"],
+                    sigma_MPa=d["sigma_MPa"], stiff=d["stiff"],
+                    p_des_bar=d["p_des_bar"], bus_J=d["bus_J"],
+                    v_nom=d["v_nom"], fin_h=d["fin_h"],
+                    fin_t=d["fin_t"], fin_p=d["fin_p"], k_fin=205.0,
+                    fin_mat=d["fin_mat"]),
+        formats={"18650": dict(d=0.0186, h=0.0652, cap=3.0, m=0.047,
+                               r=35.0),
+                 "21700": dict(d=0.0211, h=0.0703, cap=5.0, m=0.069,
+                               r=25.0),
+                 "4680": dict(d=0.046, h=0.080, cap=26.0, m=0.355,
+                              r=6.0)},
         fluids=[dict(name=d["coolant"], rho=fl["rho"], cp=fl["cp"],
                      k=fl["k"], nu25=fl["nu25"], B=fl["B"],
                      beta=fl["beta"])],
-        water=dict(rho=1000.0, cp=4180.0, k=0.60, mu=8.9e-4),
-        base=dict(T_b=res["T_b"], I0=100.0,
-                  Rbus0=busbar_props(d, g)["R"]),
-        consts=dict(K_loop=5.0, cal=d.get("cal_h", 1.0))))
-    assert len(cp_html) > 15000 and "PACK COCKPIT" in cp_html
+        waters={k_: dict(rho=v_["rho"], cp=v_["cp"], k=v_["k"],
+                         mu=v_["mu"]) for k_, v_ in WATER_LOOP.items()},
+        base=dict(T_b=res["T_b"]),
+        consts=dict(K_loop=5.0, cal=d.get("cal_h", 1.0), KT=K_TUBE,
+                    RT=RHO_TUBE)))
+    assert len(cp_html) > 25000 and "PACK COCKPIT" in cp_html
+    assert "TEMPERATURE LADDER" in cp_html and "MAX-C" in cp_html
     print(f"cockpit: {len(cp_html)//1000} kB component")
     assert len(deep) > 4000 and "first law" in deep and "COP" in deep
     print(f"deep dive: {len(deep)} chars, {deep.count('**')//2} bold terms")
@@ -1765,6 +1785,27 @@ def smoke():
     p_kg = 100 * (bmdf["whkg"].dropna() < masses["whkg_pack"]).mean()
     print(f"benchmark db: {len(bmdf)} packs  whkg {bmdf['whkg'].min():.0f}-"
           f"{bmdf['whkg'].max():.0f}  this design at {p_kg:.0f}th pct")
+    # ---- zonal plate-channel model gates ----
+    zbank = KernelBank(D=0.021, pitch=0.0215,
+                       s_grid=(0.0018, 0.0024), n=60, nz=50)
+    zd = dict(n_rows=8, n_cols=8, pitch=0.0215, d_cell=0.021,
+              h_cell=0.070, cap_Ah=5.0, r_dc=25.0, k_dcir=0.012,
+              C=2.0, plate_t=0.0015, plate_contact=0.8, s_nom=0.002,
+              T_in=20.0, flow_lpm=10.0, tube_od=0.010,
+              tube_wall=0.0008, k_tube=385.0, T_amb=25.0, h_ext=5.0,
+              A_case=0.8, nu25=9e-6, B=3200.0, rho=920.0, cp=2000.0,
+              k_oil=0.13, beta=7.5e-4, dp_extra=25.0, T_limit=45.0)
+    zr = solve_zonal(zd, zbank, nz=8, iters=180)
+    assert abs(zr["closure"]) < 0.01, f"zonal closure {zr['closure']}"
+    assert 22 < zr["T_max"] < 90 and zr["spread"] < 3.0
+    zl = derived_layout(zd, 150.0)
+    assert zl["n_tubes"] >= 2 and 0.3 < zl["eta_bay"] < 0.95
+    zmc = monte_carlo(zd, zbank, M=5, sigma_s=0.2e-3, nz=8, iters=25)
+    assert 0.0 <= zmc["p_exceed"] <= 1.0
+    assert zmc["closure_worst"] < 0.02
+    print(f"zonal: Tmax {zr['T_max']:.1f} closure "
+          f"{zr['closure']*100:.2f}% tubes {zl['n_tubes']} "
+          f"eta {zl['eta_bay']:.2f} MC ok")
     print("SMOKE OK")
 
 
@@ -2495,9 +2536,9 @@ def main():
         st.session_state.cool_df = _read_coolants()
     cool_df = st.session_state.cool_df
 
-    tabs = st.tabs(["Design", "Duty", "Results", "Cockpit", "Improve",
-                    "Ideas", "Safety", "Compare", "Learn", "Validate",
-                    "Report"])
+    tabs = st.tabs(["Design", "Duty", "Results", "Cockpit", "Zones",
+                    "Improve", "Ideas", "Safety", "Compare",
+                    "Learn", "Validate", "Report"])
 
     with tabs[0]:
         colL, colR = st.columns([1.15, 1], gap="large")
@@ -2903,12 +2944,16 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
 
     # ---------------- Cockpit ---------------- #
     with tabs[3]:
-        st.caption("A pilot's panel for the whole system: every lever on "
-                   "the rails, every readout linked, instant. The physics "
-                   "runs in your browser as a faithful port of the app's "
-                   "solver and is audited against it on load (chip, top "
-                   "left). Nothing here changes the design until you copy "
-                   "the settings and apply them below.")
+        st.caption("The whole design space on the rails: pack "
+                   "architecture, geometry, fluids, tubes, circulation and "
+                   "limits, every readout linked, instant. The physics AND "
+                   "the geometry/mass build now run in your browser as "
+                   "faithful ports of the app's solver, audited against it "
+                   "on load (chip, top left). Instruments: temperature "
+                   "ladder, flight recorder, SNAP reference deltas, MAX-C "
+                   "autothrottle, turbulence trim, dry-cooler set, and "
+                   "scenario presets. Nothing changes the design until you "
+                   "copy and apply below.")
         _H_loop = (d["h_cell"] / 2 + d["tube_zone"] / 2
                    if d.get("tube_plane", "Top of pack") == "Top of pack"
                    else 0.008 if d.get("tube_plane") ==
@@ -2922,8 +2967,18 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                                   beta=fdd["beta"]))
         cp_pay = dict(
             design=dict(C1=float(C_steady), T_amb=d["T_amb"],
-                        coolant=d["coolant"], flow_lpm=d["flow_lpm"],
-                        T_water_in=d["T_water_in"], n_tubes=d["n_tubes"],
+                        coolant=d["coolant"], fmt=d["fmt"],
+                        Ns=d["Ns"], Np=d["Np"], cap_Ah=d["cap_Ah"],
+                        r_dc=d["r_dc"], k_dcir=d["k_dcir"],
+                        k_rad=d["k_rad"], pitch=d["pitch"],
+                        arrangement=d["arrangement"],
+                        tube_plane=d.get("tube_plane", "Top of pack"),
+                        flow_lpm=d["flow_lpm"],
+                        T_water_in=d["T_water_in"],
+                        n_tubes=d["n_tubes"],
+                        loop_fluid=d["loop_fluid"],
+                        tube_od=d["tube_od"], tube_wall=d["tube_wall"],
+                        tube_mat=d["tube_mat"], fins_on=d["fins_on"],
                         circ0=("serpentine" if d.get("plate_on") else
                                "stirred" if d["u_oil"] > 0 else
                                "thermosiphon"),
@@ -2931,39 +2986,38 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                             else max(d["u_oil"], 0.05)),
                         plate_t=d.get("plate_t", 0.0015),
                         plate_contact=d.get("plate_contact", 0.8),
-                        fins_on=d["fins_on"], pitch=d["pitch"],
-                        d_cell=d["d_cell"], h_cell=d["h_cell"],
-                        tube_od=d["tube_od"], r_dc=d["r_dc"],
-                        k_dcir=d["k_dcir"], k_rad=d["k_rad"],
-                        cap_Ah=d["cap_Ah"], h_ext=d["h_ext"],
-                        k_tube=K_TUBE[d["tube_mat"]],
-                        fin_h=d["fin_h"], fin_t=d["fin_t"],
-                        fin_p=d["fin_p"],
-                        k_fin=205.0 if d["fin_mat"] == "Aluminium"
-                        else 385.0,
                         T_limit=d["T_limit"],
                         limit_core=bool(d["limit_core"]),
-                        interstitial=d.get("tube_plane") ==
-                        "Interstitial (between rows)"),
-            geom=dict(N=g["N"], A_cells=g["A_cells"], d_i=g["d_i"],
-                      L_tube=g["L_tube"], A_box_ext=g["A_box_ext"],
-                      A_flow=g["A_flow"], D_h=g["D_h"],
-                      fill_h=g["fill_h"], H_loop=_H_loop,
-                      n_rows=g["n_rows"],
-                      plate_len=max(g["Lx"] - 2 * d["manifold_margin"],
-                                    0.1),
-                      fill_frac=g["fill_h"] / g["Lz"],
-                      cell_top_frac=(d["bottom_gap"] + d["h_cell"])
-                      / g["Lz"],
-                      cell_bot_frac=d["bottom_gap"] / g["Lz"],
-                      n_rows_draw=min(g["n_rows"], 14)),
+                        h_ext=d["h_ext"],
+                        edge_margin=d["edge_margin"],
+                        bottom_gap=d["bottom_gap"],
+                        tube_zone=d["tube_zone"], gas_gap=d["gas_gap"],
+                        manifold_margin=d["manifold_margin"],
+                        passes=d["passes"],
+                        end_fraction=d["end_fraction"],
+                        holder_block=d.get("holder_block", 0.25),
+                        m_holder_g=d["m_holder_g"],
+                        struct_mass=d["struct_mass"],
+                        sigma_MPa=d["sigma_MPa"], stiff=d["stiff"],
+                        p_des_bar=d["p_des_bar"], bus_J=d["bus_J"],
+                        v_nom=d["v_nom"], fin_h=d["fin_h"],
+                        fin_t=d["fin_t"], fin_p=d["fin_p"],
+                        k_fin=205.0 if d["fin_mat"] == "Aluminium"
+                        else 385.0, fin_mat=d["fin_mat"]),
+            formats={"18650": dict(d=0.0186, h=0.0652, cap=3.0,
+                                   m=0.047, r=35.0),
+                     "21700": dict(d=0.0211, h=0.0703, cap=5.0,
+                                   m=0.069, r=25.0),
+                     "4680": dict(d=0.046, h=0.080, cap=26.0,
+                                  m=0.355, r=6.0)},
             fluids=cp_fluids,
-            water=dict(rho=1000.0, cp=4180.0, k=0.60, mu=8.9e-4),
-            base=dict(T_b=res["T_b"],
-                      I0=d["C1"] * d["cap_Ah"] * d["Np"],
-                      Rbus0=busbar_props(d, g)["R"]),
+            waters={k_: dict(rho=v_["rho"], cp=v_["cp"], k=v_["k"],
+                             mu=v_["mu"])
+                    for k_, v_ in WATER_LOOP.items()},
+            base=dict(T_b=res["T_b"]),
             consts=dict(K_loop=d.get("K_loop", 5.0),
-                        cal=d.get("cal_h", 1.0)))
+                        cal=d.get("cal_h", 1.0),
+                        KT=K_TUBE, RT=RHO_TUBE))
         components.html(cockpit_html(cp_pay), height=820)
         with st.expander("Apply cockpit settings to the design"):
             st.caption("Press 'Copy settings for Design' in the cockpit, "
@@ -2980,10 +3034,18 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                                "ntub": "w_ntub", "pitch": "w_pitch",
                                "tamb": "w_tamb", "fluid": "w_fluid",
                                "fins": "w_fins", "plt": "w_plt",
-                               "plc": "w_plc", "c1": "w_c1"}
+                               "plc": "w_plc", "c1": "w_c1",
+                               "ns": "w_Ns", "np": "w_Np",
+                               "cap": "w_cap", "rdc": "w_rdc",
+                               "kdcir": "w_kdcir", "arr": "w_arr",
+                               "tplane": "w_tplane", "tod": "w_tod",
+                               "twall": "w_twall", "tmat": "w_tmat",
+                               "loop": "w_loopf", "tlim": "w_tlim",
+                               "limc": "w_limcore", "hext": "w_hext"}
+                    ints = {"ntub", "ns", "np"}
                     for k_, wk in mapping.items():
                         if k_ in j:
-                            pen[wk] = (int(j[k_]) if k_ == "ntub"
+                            pen[wk] = (int(j[k_]) if k_ in ints
                                        else j[k_])
                     circ_map = {"thermosiphon": "Thermosiphon only",
                                 "stirred": "Open stirring",
@@ -3002,8 +3064,207 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                 except Exception as e_:
                     st.error(f"Could not parse that: {e_}")
 
-    # ---------------- Improve ---------------- #
+    # ---------------- Zones ---------------- #
     with tabs[4]:
+        st.markdown("#### Zonal plate-channel model - every cell, "
+                    "every channel, every root")
+        st.caption("The plate-channel architecture solved as a full "
+                   "thermal-hydraulic network: exact developing-flow "
+                   "kernels (fea4, on the true lens cross-section) for "
+                   "every oil slot, per-cell DCIR-coupled balances, "
+                   "plate bays rooted to water tubes at the derived "
+                   "pitch, water marched tube by tube, and the "
+                   "recirculation plenum solved in closed form. Kernel "
+                   "gates: fRe 95.7 vs 96.0, one-wall Nu 5.387 vs "
+                   "5.385, two-wall Nu 7.541 vs 7.541 exact.")
+        zc1, zc2, zc3, zc4, zc5, zc6 = st.columns(6)
+        z_s = zc1.slider("Slot s [mm]", 1.5, 3.0, 2.0, 0.1,
+                         key="zn_s")
+        z_gx = zc2.slider("In-row crevice [mm]", 0.4, 1.4, 0.5, 0.1,
+                          key="zn_gx")
+        z_dp = zc3.slider("Pump head [Pa]", 2.0, 100.0, 25.0, 1.0,
+                          key="zn_dp")
+        z_C = zc4.slider("C-rate", 0.5, 4.0, float(C_steady), 0.1,
+                         key="zn_C")
+        z_hm = zc5.selectbox("Heat map", ["Uniform", "Busbar end",
+                                          "Centre hot"], key="zn_hm")
+        z_amp = zc6.slider("Map amplitude [%]", 0, 30, 10,
+                           key="zn_amp")
+
+        @st.cache_resource(show_spinner=False)
+        def _zonal_bank(Dc, px):
+            return KernelBank(D=Dc, pitch=px,
+                              s_grid=(0.0014, 0.0018, 0.0022,
+                                      0.0027, 0.0032),
+                              k_oil=0.13, n=100, nz=100)
+
+        px_row = d["d_cell"] + z_gx / 1000.0
+        with st.spinner("Computing duct kernels for this geometry "
+                        "(one-off, cached)..."):
+            zbank = _zonal_bank(round(d["d_cell"], 4),
+                                round(px_row, 4))
+
+        zd = dict(n_rows=int(g["n_rows"]), n_cols=int(g["n_cols"]),
+                  pitch=px_row, d_cell=d["d_cell"],
+                  h_cell=d["h_cell"], cap_Ah=d["cap_Ah"],
+                  r_dc=d["r_dc"], k_dcir=d["k_dcir"], C=z_C,
+                  plate_t=d.get("plate_t", 0.0015),
+                  plate_contact=d.get("plate_contact", 0.8),
+                  s_nom=z_s / 1000.0, T_in=d["T_water_in"],
+                  flow_lpm=d["flow_lpm"], tube_od=d["tube_od"],
+                  tube_wall=d["tube_wall"],
+                  k_tube=K_TUBE[d["tube_mat"]], T_amb=d["T_amb"],
+                  h_ext=d["h_ext"], A_case=float(g["A_box_ext"]),
+                  nu25=fl["nu25"], B=fl["B"], rho=fl["rho"],
+                  cp=fl["cp"], k_oil=fl["k"], beta=fl["beta"],
+                  dp_extra=z_dp, T_limit=d["T_limit"])
+        nrz, ncz = zd["n_rows"], zd["n_cols"]
+        if z_hm == "Busbar end":
+            hmap = np.tile(np.linspace(0, z_amp / 100.0, ncz),
+                           (nrz, 1))
+        elif z_hm == "Centre hot":
+            yy, xx = np.mgrid[0:nrz, 0:ncz]
+            rr = np.hypot((yy - nrz / 2) / (nrz / 2),
+                          (xx - ncz / 2) / (ncz / 2))
+            hmap = z_amp / 100.0 * np.exp(-2.5 * rr ** 2)
+        else:
+            hmap = None
+
+        zkey = f"zres_{json.dumps([round(v, 6) if isinstance(v, float) else v for v in zd.values()])}_{z_hm}_{z_amp}"
+        if st.session_state.get("zn_key") != zkey:
+            with st.spinner("Solving the zonal network..."):
+                zr = solve_zonal(zd, zbank, heat_map=hmap, nz=10,
+                                 iters=260)
+                zr2 = solve_zonal(zd, zbank, heat_map=hmap, nz=16,
+                                  iters=40, init=zr)
+            st.session_state["zn_key"] = zkey
+            st.session_state["zn_res"] = (zr, zr2)
+        zr, zr2 = st.session_state["zn_res"]
+        lay = zr["lay"]
+
+        zm = st.columns(6)
+        zm[0].metric("Hottest cell", f"{zr['T_max']:.1f} °C",
+                     f"{zr['T_max'] - d['T_limit']:+.1f} vs limit",
+                     delta_color="inverse")
+        zm[1].metric("Zonal mean vs lumped",
+                     f"{zr['T_mean']:.1f} °C",
+                     f"{zr['T_mean'] - res['T_b']:+.1f} vs T_b")
+        zm[2].metric("Spread", f"{zr['spread']:.2f} °C")
+        zm[3].metric("Energy closure",
+                     f"{abs(zr['closure']) * 100:.2f} %")
+        zm[4].metric("Pump (slots)", f"{zr['P_pump']:.1f} W")
+        zm[5].metric("z-resolution check",
+                     f"{abs(zr['T_max'] - zr2['T_max']):.02f} °C",
+                     "nz 10 vs 16")
+        st.caption(f"Derived tube layout from the fin rule P = 2/m: "
+                   f"m = {lay['m']:.1f} /m, rule P = "
+                   f"{lay['P_rule'] * 1000:.0f} mm, snapped to "
+                   f"{lay['P_snap'] * 1000:.1f} mm = every "
+                   f"{lay['cells_per_tube']} cells, so "
+                   f"{lay['n_tubes']} tubes piercing each plate at "
+                   f"mid-height; bay fin efficiency eta = "
+                   f"{lay['eta_bay']:.2f}. Positions are lattice "
+                   f"points, never arbitrary.")
+
+        zg1, zg2 = st.columns([3, 2])
+        with zg1:
+            figz = go.Figure(go.Heatmap(
+                z=zr["T_cell"], colorscale="RdYlBu_r",
+                colorbar=dict(title="°C", thickness=12)))
+            for xk in lay["xk"]:
+                figz.add_vline(x=xk / zd["pitch"] - 0.5,
+                               line=dict(color="rgba(80,90,120,.55)",
+                                         width=1, dash="dot"))
+            figz.update_layout(height=380,
+                               title="Per-cell temperature map "
+                                     "(dotted: derived tube lines)",
+                               xaxis_title="column",
+                               yaxis_title="row",
+                               margin=dict(l=10, r=10, t=50, b=10))
+            st.plotly_chart(figz, width='stretch', key="zn_map")
+        with zg2:
+            share = zr["mdot_col"] / zr["mdot_col"].mean() * 100
+            figf = go.Figure(go.Bar(
+                y=share, marker_color="#6366F1",
+                hovertemplate="channel %{x}: %{y:.0f}%"
+                              "<extra></extra>"))
+            figf.update_layout(height=185,
+                               title="Channel flow share [% of mean]",
+                               margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(figf, width='stretch', key="zn_flow")
+            figw = go.Figure(go.Bar(
+                y=zr["T_wat"][:, -1], marker_color="#38BDF8",
+                hovertemplate="tube %{x}: %{y:.2f} °C"
+                              "<extra></extra>"))
+            figw.update_layout(height=185,
+                               title="Water outlet per tube [°C]",
+                               margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(figw, width='stretch', key="zn_wat")
+
+        st.markdown("##### Tolerance Monte Carlo")
+        zt = st.columns(4)
+        z_ss = zt[0].slider("sigma slot [mm]", 0.05, 0.50, 0.25,
+                            0.05, key="zn_ss")
+        z_sc = zt[1].slider("sigma contact", 0.0, 0.25, 0.10, 0.01,
+                            key="zn_sc")
+        z_M = zt[2].slider("Samples", 30, 300, 90, 30, key="zn_M")
+        run_mc = zt[3].button("Run Monte Carlo", key="zn_run",
+                              type="primary")
+        if run_mc:
+            pb = st.progress(0.0)
+            mc = monte_carlo(zd, zbank, M=int(z_M),
+                             sigma_s=z_ss / 1000.0, sigma_c=z_sc,
+                             heat_map=hmap,
+                             progress=lambda f: pb.progress(f))
+            pb.empty()
+            st.session_state["zn_mc"] = mc
+        if "zn_mc" in st.session_state:
+            mc = st.session_state["zn_mc"]
+            mm = st.columns(4)
+            mm[0].metric("Tmax, mean of samples",
+                         f"{mc['Tmax'].mean():.2f} °C",
+                         f"sd {mc['Tmax'].std():.3f}")
+            mm[1].metric("Worst sample",
+                         f"{mc['Tmax'].max():.2f} °C")
+            mm[2].metric(f"P(exceed {zd['T_limit']:.0f} °C)",
+                         f"{mc['p_exceed']:.3f}")
+            mm[3].metric("Worst closure",
+                         f"{mc['closure_worst'] * 100:.2f} %")
+            zh1, zh2 = st.columns(2)
+            fh1 = go.Figure(go.Histogram(x=mc["Tmax"], nbinsx=24,
+                                         marker_color="#6366F1"))
+            fh1.update_layout(height=220,
+                              title="Hottest cell across samples",
+                              margin=dict(l=10, r=10, t=40, b=10))
+            zh1.plotly_chart(fh1, width='stretch', key="zn_h1")
+            fh2 = go.Figure(go.Histogram(x=mc["spread"], nbinsx=24,
+                                         marker_color="#F59E0B"))
+            fh2.update_layout(height=220,
+                              title="Pack spread across samples",
+                              margin=dict(l=10, r=10, t=40, b=10))
+            zh2.plotly_chart(fh2, width='stretch', key="zn_h2")
+            st.caption("Reading: with the lens-shaped slots the flow "
+                       "sensitivity to width is nearly linear (the "
+                       "flat-slot cubic law does not apply here), and "
+                       "plates plus the mixed plenum homogenise the "
+                       "pack, so manufacturing scatter barely moves "
+                       "the hottest cell. The governing resistance is "
+                       "the water film at the roots: water-side flow "
+                       "and tube count, not tolerance, set the "
+                       "temperature level.")
+        st.markdown("**Model notes, stated plainly:** cell cans are "
+                    "treated as isothermal (high-k casing); kernels "
+                    "assume laminar developing flow (checked: Re "
+                    "stays far below transition); root contact "
+                    "conductance 8000 W/m²·K is an assumption "
+                    "pending braze data and enters through one "
+                    "slider-equivalent; radiation is excluded "
+                    "(order 1 W at these temperature differences); "
+                    "the staircase boundary in fea4 was validated "
+                    "against exact limits before use.")
+
+    # ---------------- Improve ---------------- #
+    with tabs[5]:
         with st.container(border=True):
             st.markdown("#### Predictor - what happens if...")
             st.caption("Play with the levers; nothing is saved to the design. "
@@ -3066,7 +3327,7 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
         improve_core(d, g, fl, masses, res, Q_duty, C_steady, cool_df)
 
     # ---------------- Ideas ---------------- #
-    with tabs[5]:
+    with tabs[6]:
         st.caption("Concepts tried against the live design. Baseline = this "
                    "design with no forced circulation. Adopt a winner via "
                    "Design - Circulation method.")
@@ -3148,7 +3409,7 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                 "design, and serviceability.")
 
     # ---------------- Safety ---------------- #
-    with tabs[6]:
+    with tabs[7]:
         st.markdown("Order-of-magnitude screening plus the engineering checklist. "
                     "Nothing here replaces abuse testing.")
         runaway_ui(d, g, fl, masses, res)
@@ -3164,7 +3425,7 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
 * Ester fluids: monitor moisture; copper: use inhibited oil or plated tubes.""")
 
     # ---------------- Compare ---------------- #
-    with tabs[7]:
+    with tabs[8]:
         st.subheader("Architectures")
         arch_tab(d, g, fl, masses, C_steady)
         st.markdown("---")
@@ -3252,7 +3513,7 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
         bench_prod_tab(masses, Cmax)
 
     # ---------------- Learn ---------------- #
-    with tabs[8]:
+    with tabs[9]:
         with st.expander("0. Where the heat goes - the whole story in plain "
                          "words", expanded=True):
             hot1 = "the water film inside the tubes" \
@@ -3368,7 +3629,7 @@ local film temperature - see the ν(T) curve in Design.""")
                   ok=ok, T_gov=T_gov, T_limit=d["T_limit"],
                   kwh=masses["E_kwh"], mass=masses["m_pack"], Cmax=Cmax,
                   chil_el=chil["P_el"])
-    with tabs[10]:
+    with tabs[11]:
         cbt, _ = st.columns([1, 3])
         cbt.download_button("Download this report (.html)",
                             data=export_report_html(secs, figs_r, meta_r),
@@ -3377,7 +3638,7 @@ local film temperature - see the ν(T) curve in Design.""")
         render_report_tab(secs, figs_r, meta_r)
 
     # ---------------- Validate and tune ---------------- #
-    with tabs[9]:
+    with tabs[10]:
         st.subheader("Benchmark: Wang et al. 2023")
         bench_wang_tab()
         st.markdown("---")

@@ -346,3 +346,59 @@ sandbox has no return channel, so the clipboard bridge is the honest
 route). Disclosed simplifications: tube length and box size are held
 fixed under the pitch lever, and exactness at the current design point
 is guaranteed by the audit chip rather than assumed.
+
+## v9.2: Cockpit takes the whole design space
+build_geometry, enclosure_calc, build_masses and busbar_props are ported
+to the browser alongside the physics, so pack architecture now honestly
+reshapes everything live: cell format (18650/21700/4680 presets), series
+and parallel counts, pitch and hex/square arrangement, tube plane, tube
+OD/wall/material, and the loop fluid all rebuild the box, tube length,
+areas, oil volume and pack mass in the panel - v9.1's fixed-geometry
+simplification is gone. Rails are grouped and scrollable: POWER, PACK &
+CELLS, GEOMETRY, FLUID and LIMITS on the left; WATER LOOP, TUBES & FINS
+and CIRCULATION on the right. New instruments: a live temperature ladder
+(the X-ray's essence as a stacked strip), a flight-data-recorder trace of
+the governing temperature against the limit line, SNAP reference deltas
+on the key readouts, a MAX-C autothrottle (in-browser bisection,
+debounced), TRIM TURB (closed-form minimum flow for Re >= 3100), DRY SET,
+and four scenario presets. The PFD adds max continuous C, energy, pack
+mass, and oil tiles. Offline fidelity measurement with the real payload:
+the audit chip reads +0.00 degrees C against the full Python solve at the
+design point; mass and oil tiles agree with build_masses. The apply
+bridge now lands ~24 keys on the real Design widgets including Ns, Np,
+capacity, DCIR and its temperature fall, tube spec, tube plane,
+arrangement, loop fluid, limit and h_ext (format preset stays
+cockpit-only since it drives several linked widgets at once).
+
+## v9.3: Zonal plate-channel model with Monte Carlo (new Zones tab)
+The plate-channel architecture solved as a full thermal-hydraulic
+network with no hand-waved constants. fea4_channel.py computes exact
+developing-flow kernels on the true lens-shaped slot cross-section
+(velocity Poisson for fRe; two-case Graetz march with isothermal walls
+giving the 2x2 transport matrix a(z*, s)), validated against
+parallel-plate limits: fRe 95.7 vs 96.0, one-wall Nu 5.387 vs 5.385,
+two-wall Nu 7.541 vs 7.541. An earlier stagnant-slot study returned an
+arc effectiveness of ~0.13, which redirected the concept honestly: the
+oil is the primary carrier (the whole 70 mm channel operates in the
+thermal entrance at Pr ~ 127, cell film ~3x the thermosiphon), and the
+plates are the secondary sink plus structure. zonal.py assembles every
+slot, cell, plate bay, root and water crossing: exact exponential
+z-march per channel, per-cell Newton with the march's own Jacobian and
+DCIR feedback, plate faces solved in closed form against the
+contact + wall + water-film root chain, water marched tube by tube,
+and the recirculation plenum solved from the linear exit map (removing
+a slow mode that stalled convergence). Tube count and positions are
+derived from the fin rule P = 2/m snapped to the cell lattice (17
+tubes at the defaults, one every two cells, bay efficiency 0.64).
+Validation: energy closure 0.19% full-size, z-resolution independence
+0.02 degrees C, and an independent cross-check against the lumped
+serpentine solver (zonal 41.2 vs lumped 40.9 degrees C at 2C).
+Findings: the flat-slot cubic law does not apply to the lens duct
+(flow sensitivity to slot width is nearly linear, exponent ~0.7), so
+with plate homogenisation the design is remarkably tolerance-robust;
+the governing resistance is the water film at the roots. The Zones tab
+exposes slot width, crevice, pump head, C-rate and three heat maps,
+renders the per-cell temperature map with derived tube lines, channel
+flow shares and per-tube water outlets, and runs a warm-started
+tolerance Monte Carlo with exceedance probability. Smoke gains zonal
+gates; all legacy tests green.
