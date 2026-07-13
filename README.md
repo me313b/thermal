@@ -284,3 +284,18 @@ fan-heater perspective), the key misreading warning (better cooling does
 not widen ribbons - it lowers temperatures), and what the map deliberately
 cannot show. It renders beneath the map in Results and as its own report
 section; every number adapts to the design on screen.
+
+## v8.9: the report rebuilt, in-app and exported
+Version is now visible in the app header, the sidebar status card, the
+report header and the export footer. The in-app Report opens with its own
+header band (spec, version, date, status chip, reading time, key stats)
+and a navigable contents bar: read the full report or one numbered section
+at a time with previous/next controls. The HTML export is redesigned from
+scratch: a proper markdown engine (tables now render as tables - the old
+exporter printed raw pipes), a cover with status chips and a stats strip,
+a sticky contents sidebar with scrollspy highlighting and smooth scroll,
+styled callouts for every Improve action, hover-styled tables, a
+back-to-top button, a print stylesheet (contents hidden, sections kept
+whole), a responsive single-column layout on narrow screens, and a
+provenance footer (Wang 2023, pack_fea_v1, the 58-pack database, BNEF
+December 2025).

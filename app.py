@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v8.8"
+APP_VERSION = "v8.9"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import numpy as np
@@ -1703,12 +1703,19 @@ def smoke():
     secs = report_sections(d, g, fl, res, masses, tr_s, spec_c, Cmax, d["C1"],
                            Q, Q_bus, 0.1, 0.0, ch, figs, arch_df=adf6,
                            cost=COST_DEFAULTS)
-    html = export_report_html(secs, figs)
+    meta_s = dict(version=APP_VERSION, date="test", spec="smoke",
+                  ok=True, T_gov=res["T_b"], T_limit=d["T_limit"],
+                  kwh=masses["E_kwh"], mass=masses["m_pack"], Cmax=Cmax,
+                  chil_el=ch["P_el"])
+    html = export_report_html(secs, figs, meta_s)
     deep = sankey_deep_dive(d, g, fl, res, masses, Q, Q_bus, 0.1, 0.0, ch,
                             d["C1"])
     assert len(deep) > 4000 and "first law" in deep and "COP" in deep
     print(f"deep dive: {len(deep)} chars, {deep.count('**')//2} bold terms")
-    assert len(secs) == 9 and "<html" in html and "architecture" in html.lower()
+    assert len(secs) == 9 and "<html" in html
+    assert "id='toc'" in html and "<table>" in html and APP_VERSION in html
+    assert "callout" in html and "IntersectionObserver" in html
+    print(f"export: {len(html)//1000} kB, TOC + tables + scrollspy present")
     print(f"report: {len(secs)} sections, HTML {len(html)//1000} kB")
     # ---- v7 checks: serpentine plates + circuit ----
     ds = dict(d, plate_on=True, u_oil=0.05, plate_t=0.0015, plate_contact=0.8)
@@ -2561,7 +2568,7 @@ def main():
     # ---------------- sidebar: status, save/load, report ---------------- #
     sb = st.sidebar
     sb.markdown(
-        f"<div class='kpi'><div class='l'>Design status</div>"
+f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
         f"<div class='v {'ok' if ok else 'bad'}'>"
         f"{'Within limit' if ok else 'Over limit'}</div>"
         f"<div class='s'>{res['T_b']:.1f} °C at {C_steady:.2f}C rms - "
@@ -3142,13 +3149,23 @@ local film temperature - see the ν(T) curve in Design.""")
     secs = report_sections(d, g, fl, res, masses, tr, spec, Cmax, C_steady,
                            Q_duty, Q_bus, P_pump, P_stir, chil, figs_r,
                            arch_df=arch_df, cost=cost_now)
+    import datetime as _dt
+    meta_r = dict(version=APP_VERSION,
+                  date=_dt.date.today().strftime("%d %b %Y"),
+                  spec=(f"{masses['E_kwh']:.1f} kWh / "
+                        f"{d['Ns']*d['v_nom']:.0f} V - {g['N']} x "
+                        f"{d['fmt']} in "
+                        f"{fl['name'].split('(')[0].strip()} - {d['duty']}"),
+                  ok=ok, T_gov=T_gov, T_limit=d["T_limit"],
+                  kwh=masses["E_kwh"], mass=masses["m_pack"], Cmax=Cmax,
+                  chil_el=chil["P_el"])
     with tabs[9]:
         cbt, _ = st.columns([1, 3])
         cbt.download_button("Download this report (.html)",
-                            data=export_report_html(secs, figs_r),
+                            data=export_report_html(secs, figs_r, meta_r),
                             file_name="pack_design_report.html",
                             mime="text/html", use_container_width=True)
-        render_report_tab(secs, figs_r)
+        render_report_tab(secs, figs_r, meta_r)
 
     # ---------------- Validate and tune ---------------- #
     with tabs[8]:
@@ -4481,36 +4498,184 @@ Oil-side h honest to +/-30% until the calibration factor
 challenge are listed in the README.""", []))
     return S
 
-def render_report_tab(secs, figs):
-    st.caption("The same report exports as a standalone HTML from the sidebar "
-               "or the button below - figures stay interactive.")
-    for title, md, fkeys in secs:
+def render_report_tab(secs, figs, meta):
+    words = sum(len(md.split()) for _, md, _ in secs)
+    st.markdown(
+        f"<div class='hero'><div class='hero-top'>"
+        f"<h1>Design report</h1>"
+        f"<span class='sub'>{meta['spec']}</span>"
+        f"<span class='chip'>{meta['version']} - {meta['date']}</span>"
+        f"<span class='chip {'ok' if meta['ok'] else 'bad'}'>"
+        f"{'WITHIN LIMIT' if meta['ok'] else 'OVER LIMIT'} - "
+        f"{meta['T_gov']:.1f} / {meta['T_limit']:.0f} °C</span>"
+        f"</div><div class='hero-stats'>"
+        f"<div class='hstat'>sections<b>{len(secs)}</b></div>"
+        f"<div class='hstat'>reading time<b>~{max(words//200,1)} min</b></div>"
+        f"<div class='hstat'>energy<b>{meta['kwh']:.1f} kWh</b></div>"
+        f"<div class='hstat'>mass<b>{meta['mass']:.0f} kg</b></div>"
+        f"<div class='hstat'>max continuous<b>{meta['Cmax']:.2f} C</b></div>"
+        f"<div class='hstat'>chiller<b>{meta['chil_el']/1000:.2f} kW el</b>"
+        f"</div></div></div>", unsafe_allow_html=True)
+    names = [f"{i+1}. {t}" for i, (t, _, _) in enumerate(secs)]
+    opts = ["Full report"] + names
+    pick = (st.pills("Contents", opts, default="Full report",
+                     key="rep_nav", label_visibility="collapsed")
+            if hasattr(st, "pills") else
+            st.radio("Contents", opts, horizontal=True, key="rep_nav"))
+    pick = pick or "Full report"
+    show = (list(range(len(secs))) if pick == "Full report"
+            else [opts.index(pick) - 1])
+    for i in show:
+        title, md, fkeys = secs[i]
         with st.container(border=True):
-            st.subheader(title)
+            st.markdown(f"### {i+1}. {title}")
             st.markdown(md)
             for k in fkeys:
                 if k in figs:
                     st.plotly_chart(figs[k], use_container_width=True,
-                                    key=f"rep_{title[:12]}_{k}")
+                                    key=f"rep_{i}_{k}")
+    if pick != "Full report":
+        i = show[0]
+        cprev, cnext, _ = st.columns([1, 1, 5])
+        if i > 0 and cprev.button(f"<- {i}. {secs[i-1][0][:22]}",
+                                  key="rep_prev"):
+            st.session_state.setdefault("_pending", {})["rep_nav"] = opts[i]
+            st.rerun()
+        if i < len(secs) - 1 and cnext.button(
+                f"{i+2}. {secs[i+1][0][:22]} ->", key="rep_next"):
+            st.session_state.setdefault("_pending", {})["rep_nav"] = \
+                opts[i + 2]
+            st.rerun()
 
-def export_report_html(secs, figs) -> str:
-    body = ""
-    for title, md, fkeys in secs:
-        html_md = md.replace("**", "").replace("*Improve:*", "<b>Improve:</b>")
-        body += f"<h2>{title}</h2><p>{html_md}</p>"
+def export_report_html(secs, figs, meta) -> str:
+    try:
+        import markdown as _md
+        conv = lambda t: _md.markdown(t, extensions=["tables"])
+    except Exception:
+        conv = lambda t: "<p>" + t.replace("\n\n", "</p><p>") + "</p>"
+    toc, body = "", ""
+    for i, (title, md, fkeys) in enumerate(secs):
+        sid = f"sec{i+1}"
+        toc += f"<a href='#{sid}' data-sec='{sid}'>{i+1}. {title}</a>"
+        html_md = conv(md)
+        html_md = html_md.replace("<p><em>Improve:</em>",
+                                  "<p class='callout'><em>Improve:</em>")
+        body += f"<section id='{sid}'><h2>{i+1}. {title}</h2>{html_md}"
         for k in fkeys:
             if k in figs:
-                body += figs[k].to_html(full_html=False, include_plotlyjs=False)
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
-<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
-<title>Immersion Pack Lab - design report</title>
-<style>body{{font-family:Georgia,serif;max-width:1000px;margin:2em auto;
-color:#1F2933;line-height:1.5}}h1{{border-bottom:3px solid #F59E0B}}
-h2{{color:#4F46E5;margin-top:1.6em}}</style></head><body>
-<h1>Immersion Pack Lab - design report</h1>{body}
-<p style="font-size:.85em;color:#666">Generated by Immersion Pack Lab v5.
-Sources: Wang 2023 (J. Energy Storage 62, 106821); teardown data per the
-Compare tab; pack_fea_v1 studies.</p></body></html>"""
+                body += ("<div class='fig'>"
+                         + figs[k].to_html(full_html=False,
+                                           include_plotlyjs=False)
+                         + "</div>")
+        body += "</section>"
+    chip = ("<span class='chip ok'>WITHIN LIMIT</span>" if meta["ok"]
+            else "<span class='chip bad'>OVER LIMIT</span>")
+    stats = "".join(
+        f"<div class='stat'><span>{k}</span><b>{v}</b></div>" for k, v in [
+            ("energy", f"{meta['kwh']:.1f} kWh"),
+            ("mass", f"{meta['mass']:.0f} kg"),
+            ("governing T", f"{meta['T_gov']:.1f} / {meta['T_limit']:.0f} °C"),
+            ("max continuous", f"{meta['Cmax']:.2f} C"),
+            ("chiller", f"{meta['chil_el']/1000:.2f} kW el"),
+        ])
+    css = ("body{font-family:Inter,-apple-system,'Segoe UI',sans-serif;"
+           "color:#1F2937;margin:0;background:#fff;line-height:1.55}"
+           "*{box-sizing:border-box}"
+           ".wrap{display:grid;grid-template-columns:230px 1fr;gap:34px;"
+           "max-width:1180px;margin:0 auto;padding:26px}"
+           "nav{position:sticky;top:20px;align-self:start;"
+           "border:1px solid #E7EAF0;border-radius:14px;padding:12px;"
+           "font-size:.85rem}"
+           "nav a{display:block;color:#64748B;text-decoration:none;"
+           "padding:5px 8px;border-radius:8px;"
+           "border-left:3px solid transparent}"
+           "nav a:hover{background:#F1F5F9}"
+           "nav a.on{color:#6E77F0;border-left-color:#6E77F0;"
+           "background:#EEF2FF;font-weight:600}"
+           "header.cover{grid-column:1/-1;background:"
+           "linear-gradient(120deg,#EEF2FF,#E6F7FD);"
+           "border:1px solid #E3E8F4;border-radius:18px;padding:22px 26px}"
+           "header.cover h1{margin:0;font-size:1.6rem;"
+           "letter-spacing:-.02em}"
+           "header .sub{color:#64748B;margin-top:4px}"
+           ".chips{margin-top:10px}"
+           ".chip{display:inline-block;padding:3px 12px;"
+           "border-radius:999px;font-size:.76rem;font-weight:600;"
+           "margin-right:8px;background:#fff;border:1px solid #E3E8F4;"
+           "color:#4A54D8}"
+           ".chip.ok{background:#DCFCE7;color:#15803D;"
+           "border-color:#86EFAC}"
+           ".chip.bad{background:#FEE2E2;color:#B91C1C;"
+           "border-color:#FCA5A5}"
+           ".stats{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}"
+           ".stat{background:rgba(255,255,255,.8);"
+           "border:1px solid #E3E8F4;border-radius:12px;padding:8px 14px;"
+           "font-size:.72rem;color:#64748B}"
+           ".stat b{display:block;font-size:1rem;color:#1F2937}"
+           "section{border:1px solid #E7EAF0;border-radius:16px;"
+           "padding:6px 22px;margin:0 0 18px 0;"
+           "box-shadow:0 1px 2px rgba(16,24,40,.04)}"
+           "h2{color:#1F2937;letter-spacing:-.02em}"
+           ".callout{background:#EEF2FF;border-left:4px solid #6E77F0;"
+           "border-radius:8px;padding:10px 14px}"
+           "table{border-collapse:collapse;width:100%;font-size:.88rem;"
+           "margin:12px 0}"
+           "th,td{border-bottom:1px solid #E7EAF0;padding:7px 9px;"
+           "text-align:left}"
+           "th{background:#F8FAFC;font-weight:600}"
+           "tr:hover td{background:#F8FAFC}"
+           ".fig{margin:10px 0}"
+           "#top{position:fixed;right:22px;bottom:22px;background:#6E77F0;"
+           "color:#fff;border:none;border-radius:999px;width:42px;"
+           "height:42px;font-size:20px;cursor:pointer;opacity:.85;"
+           "display:none}"
+           "footer{grid-column:1/-1;color:#64748B;font-size:.8rem;"
+           "border-top:1px solid #E7EAF0;padding-top:14px;margin-top:6px}"
+           "@media print{nav,#top{display:none!important}"
+           ".wrap{display:block}section{break-inside:avoid;border:none;"
+           "box-shadow:none;padding:0}header.cover{border:none}}"
+           "@media (max-width:900px){.wrap{display:block}"
+           "nav{position:static;margin-bottom:16px}}")
+    js = ("const links=[...document.querySelectorAll('nav a')];"
+          "const secs=[...document.querySelectorAll('main section')];"
+          "const io=new IntersectionObserver(es=>{es.forEach(e=>{"
+          "if(e.isIntersecting){links.forEach(l=>l.classList.toggle('on',"
+          "l.dataset.sec===e.target.id));}});},"
+          "{rootMargin:'-20% 0px -70% 0px'});"
+          "secs.forEach(s=>io.observe(s));"
+          "links.forEach(l=>l.addEventListener('click',ev=>{"
+          "ev.preventDefault();document.getElementById(l.dataset.sec)"
+          ".scrollIntoView({behavior:'smooth'});}));"
+          "const topb=document.getElementById('top');"
+          "addEventListener('scroll',()=>{topb.style.display="
+          "scrollY>600?'block':'none';});")
+    return ("<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' "
+            "content='width=device-width,initial-scale=1'>"
+            "<script src='https://cdn.plot.ly/plotly-2.32.0.min.js'>"
+            "</script>"
+            f"<title>Immersion Pack Lab report {meta['version']}</title>"
+            f"<style>{css}</style></head><body><div class='wrap'>"
+            "<header class='cover'>"
+            "<h1>Immersion Pack Lab - design report</h1>"
+            f"<div class='sub'>{meta['spec']}</div>"
+            f"<div class='chips'><span class='chip'>{meta['version']}"
+            f"</span><span class='chip'>{meta['date']}</span>{chip}</div>"
+            f"<div class='stats'>{stats}</div></header>"
+            "<nav id='toc'><b style='display:block;margin:2px 8px 8px'>"
+            "Contents</b>" + toc + "</nav>"
+            f"<main>{body}</main>"
+            "<button id='top' "
+            "onclick='scrollTo({top:0,behavior:\"smooth\"})'>^</button>"
+            f"<footer>Generated by Immersion Pack Lab {meta['version']} "
+            f"on {meta['date']}. Physics anchored to Wang et al. 2023 "
+            "(J. Energy Storage 62, 106821) and the pack_fea_v1 studies; "
+            "benchmark data: pack_benchmark.xlsx (58 BEV packs); cell "
+            "costs: BNEF December 2025 survey. Interactive figures "
+            "require the plotly CDN; everything else is self-contained."
+            "</footer></div>"
+            f"<script>{js}</script></body></html>")
+
 
 if __name__ == "__main__":
     if os.environ.get("SMOKE"):
