@@ -116,6 +116,7 @@ def cockpit_html(payload: dict) -> str:
  <button class="preset" data-p="serp">Serpentine</button>
  <button class="preset" data-p="eco">Economy 30&deg;</button>
  <button class="preset" data-p="c4">4C attempt</button>
+ <button class="preset" data-p="ext">Ext pump</button>
  <button class="preset" data-p="reset"
   style="border-color:#F59E0B;color:#FCD34D">&#8635; Reset</button>
  <span id="cp-status">live</span>
@@ -147,6 +148,8 @@ const D=P.design,B=P.base,K=P.consts,FMT=P.formats,
 const FL={};P.fluids.forEach(f=>FL[f.name]=f);
 // ------------- controls (the whole design space) -------------
 const C={c:D.C1,tamb:D.T_amb,fluid:D.coolant,
+ tshape:D.tshape||'round',tw:(D.tw||0.012)*1000,th:(D.th||0.008)*1000,
+ pipeD:(D.pipe_id||0.019)*1000,pipeL:D.pipe_len||2.5,
  fmt:D.fmt,ns:D.Ns,np:D.Np,cap:D.cap_Ah,rdc:D.r_dc,kdcir:D.k_dcir,
  pitch:D.pitch*1000,arr:D.arrangement,tplane:D.tube_plane,
  flow:D.flow_lpm,twin:D.T_water_in,nt:D.n_tubes,loop:D.loop_fluid,
@@ -173,6 +176,28 @@ const blend=(a,b)=>Math.cbrt(a*a*a+b*b*b);
 function gapf(mm){return mm>=6?1:Math.max(0.35,
  Math.pow(Math.max(mm,0.3)/6,0.6));}
 // exact build_geometry port
+const _RA=[0.125,0.25,0.3333,0.5,1.0],
+ _RF=[82.34,72.93,68.36,62.19,56.91],
+ _RN=[5.60,4.44,3.96,3.39,2.98];
+function _lerp(x,xs,ys){if(x<=xs[0])return ys[0];
+ for(let i=1;i<xs.length;i++)if(x<=xs[i]){
+  const w=(x-xs[i-1])/(xs[i]-xs[i-1]);
+  return ys[i-1]+w*(ys[i]-ys[i-1]);}
+ return ys[ys.length-1];}
+function tubeSec(){const t=C.twall/1000;
+ if(C.tshape==='square'){const ao=C.tw/1000,ai=Math.max(ao-2*t,1e-4);
+  return{shape:'square',Ain:ai*ai,Pin:4*ai,Pout:4*ao,Dh:ai,
+   metal:ao*ao-ai*ai,AoutCS:ao*ao,contact:ao,fRe:56.91,lamNu:2.98};}
+ if(C.tshape==='rect'){const wo=C.tw/1000,ho=C.th/1000,
+  wi=Math.max(wo-2*t,1e-4),hi=Math.max(ho-2*t,1e-4),
+  A=wi*hi,Pi=2*(wi+hi),asp=Math.min(wi,hi)/Math.max(wi,hi);
+  return{shape:'rect',Ain:A,Pin:Pi,Pout:2*(wo+ho),Dh:4*A/Pi,
+   metal:wo*ho-wi*hi,AoutCS:wo*ho,contact:ho,
+   fRe:_lerp(asp,_RA,_RF),lamNu:_lerp(asp,_RA,_RN)};}
+ const od=C.tod/1000,ai=Math.max(od-2*t,1e-3);
+ return{shape:'round',Ain:Math.PI*ai*ai/4,Pin:Math.PI*ai,
+  Pout:Math.PI*od,Dh:ai,metal:Math.PI/4*(od*od-ai*ai),
+  AoutCS:Math.PI*od*od/4,contact:0,fRe:64.0,lamNu:3.66};}
 function geometry(){
  const fm=FMT[C.fmt],Dm=fm.d,H=fm.h,p=C.pitch/1000;
  const N=Math.round(C.ns)*Math.round(C.np);
@@ -183,13 +208,13 @@ function geometry(){
  const Lx=ncol*p+2*e,Ly=(nrow-1)*rp+p+2*e;
  const Lz=D.bottom_gap+H+D.tube_zone+D.gas_gap;
  const fillh=Lz-D.gas_gap;
- const od=C.tod/1000,tw=C.twall/1000,di=Math.max(od-2*tw,1e-3);
+ const ts=tubeSec(),od=C.tod/1000,di=ts.Dh;
  const Lt=Math.max(Lx-2*D.manifold_margin,0.05)*D.passes;
  const nt=Math.round(C.nt);
  const fe=D.end_fraction;
  const Ac=N*(Math.PI*Dm*H+fe*2*Math.PI*Dm*Dm/4);
  const Vbox=Lx*Ly*fillh,Vc=N*Math.PI*Dm*Dm/4*H,
-  Vt=nt*Lt*Math.PI*od*od/4;
+  Vt=nt*Lt*ts.AoutCS;
  const Aext=2*(Lx*Ly+Lx*Lz+Ly*Lz);
  const fpc=Math.max(p*rp-Math.PI*Dm*Dm/4,1e-6),
   blk=1-D.holder_block;
@@ -197,7 +222,7 @@ function geometry(){
   Dh=4*fpc/(Math.PI*Dm)*Math.sqrt(Math.max(blk,0.05));
  const Hloop=C.tplane==='Top of pack'?H/2+D.tube_zone/2:
   C.tplane==='Interstitial (between rows)'?0.008:H/2;
- return{N,gap,ncol,nrow,rp,Lx,Ly,Lz,fillh,od,di,Lt,nt,Ac,Vbox,Vc,Vt,
+ return{N,gap,ncol,nrow,rp,Lx,Ly,Lz,fillh,od,di,ts,Lt,nt,Ac,Vbox,Vc,Vt,
   Aext,Aflow,Dh,Hloop,Dm,H,pm:p,platelen:Math.max(Lx-2*
   D.manifold_margin,0.1)};}
 function finPack(g,h){const r1=g.od/2,r2=r1+D.fin_h,r2c=r2+D.fin_t/2;
@@ -209,6 +234,7 @@ function finPack(g,h){const r1=g.od/2,r2=r1+D.fin_h,r2c=r2+D.fin_t/2;
  const vol=n*(Math.PI*(r2*r2-r1*r1)*D.fin_t);
  return{Aeff:Ab+eta*Af,vol};}
 function plateFin(g,h,on,t,contact){if(!on)return{A:0,eta:0,m:0};
+ const srv=Math.min(1,g.nt/Math.max(g.nrow-1,1));contact*=srv;
  const k=205,L=g.H,m=Math.sqrt(2*Math.max(h,5)/(k*t)),
  eta=Math.tanh(m*L)/Math.max(m*L,1e-9),npl=Math.max(g.nrow-1,1);
  return{A:npl*2*L*g.platelen*eta*contact,eta,
@@ -226,7 +252,7 @@ function massesCalc(g,finVol,plm){
  const f=FL[C.fluid],fm=FMT[C.fmt];
  const Voil=Math.max(g.Vbox-g.Vc-g.Vt-finVol,1e-4);
  const moil=Voil*f.rho,mcell=g.N*fm.m;
- const mt=RT[C.tmat]*g.nt*g.Lt*Math.PI/4*(g.od*g.od-g.di*g.di);
+ const mt=RT[C.tmat]*g.nt*g.Lt*g.ts.metal;
  const mf=finVol*(D.fin_mat==='Aluminium'?2700:8940);
  const enc=enclosure(g);
  const mst=D.struct_mass>0?D.struct_mass:enc.m;
@@ -243,11 +269,12 @@ function thermo(f,g,Q,Toil){const p=props(f,Toil);
   if(resid(m)>0)lo=m;else hi=m;}
  return{u:lo,dT:Math.min(Q/(p.rho*lo*A*p.cp),60)};}
 function rOfT(T){return C.rdc*Math.exp(-C.kdcir*(T-25));}
-function hWater(md,di,L){const W_=WATERS[C.loop];
+function hWater(md,di,L,lamNu,Pin){const W_=WATERS[C.loop];
+ lamNu=lamNu||3.66;Pin=Pin||Math.PI*di;
  const{mu,k,cp}=W_;const Pr=mu*cp/k;
- const Re=md>0?4*md/(Math.PI*mu*di):0;
+ const Re=md>0?4*md/(mu*Pin):0;
  const lam=R=>{const gz=(di/L)*R*Pr;
-  return 3.66+0.0668*gz/(1+0.04*Math.pow(gz,2/3));};
+  return lamNu+0.0668*gz/(1+0.04*Math.pow(gz,2/3));};
  const tur=R=>{const f=Math.pow(0.790*Math.log(R)-1.64,-2);
   return (f/8)*(R-1000)*Pr/(1+12.7*Math.sqrt(f/8)*
    (Math.pow(Pr,2/3)-1));};
@@ -260,9 +287,9 @@ function hWater(md,di,L){const W_=WATERS[C.loop];
  return{h:Nu*k/di,Re,regime:reg};}
 function waterPump(g){const W_=WATERS[C.loop];
  const md=C.flow/60*W_.rho/1000,mdt=md/Math.max(g.nt,1),
- Ai=Math.PI*g.di*g.di/4,v=mdt/(W_.rho*Ai),
+ Ai=g.ts.Ain,v=mdt/(W_.rho*Ai),
  Re=W_.rho*v*g.di/W_.mu,
- f=Re<2300?64/Math.max(Re,1):0.316*Math.pow(Re,-0.25),
+ f=Re<2300?g.ts.fRe/Math.max(Re,1):0.316*Math.pow(Re,-0.25),
  dp=(f*g.Lt/g.di+6)*0.5*W_.rho*v*v;
  return dp*(md/W_.rho)/0.35;}
 function stirP(f,g,u){if(u<=1e-6)return 0;const p=props(f,35);
@@ -282,11 +309,14 @@ function solve(cOverride){
  const cc=cOverride===undefined?C.c:cOverride;
  const f=FL[C.fluid],g=geometry(),W_=WATERS[C.loop];
  const md=C.flow/60*W_.rho/1000,mdt=md/Math.max(g.nt,1);
- const wat=hWater(mdt,g.di,g.Lt);
- const Rin=1/Math.max(wat.h*Math.PI*g.di*g.Lt*g.nt,1e-9);
- const Rw=Math.log(g.od/g.di)/(2*Math.PI*KT[C.tmat]*g.Lt*g.nt);
+ const wat=hWater(mdt,g.di,g.Lt,g.ts.lamNu,g.ts.Pin);
+ const Rin=1/Math.max(wat.h*g.ts.Pin*g.Lt*g.nt,1e-9);
+ const Rw=g.ts.shape==='round'
+  ?Math.log(g.od/g.di)/(2*Math.PI*KT[C.tmat]*g.Lt*g.nt)
+  :(C.twall/1000)/(KT[C.tmat]*0.5*(g.ts.Pin+g.ts.Pout)*g.Lt*g.nt);
  const Ratm=1/Math.max(C.hext*g.Aext,1e-9);
- const serp=C.circ==='serpentine',stir=C.circ==='stirred';
+ const ext=C.circ==='extpump',
+ serp=C.circ==='serpentine'||ext,stir=C.circ==='stirred';
  const uc=(serp||stir)?C.u:0;
  const bb=busR(g);
  let Til=C.twin+8,Tb=Til+6,Twl=C.twin+2,Q=1000,uts=0,dTl=0;
@@ -309,9 +339,10 @@ function solve(cOverride){
   if(ue>1e-6)hf2=nuCB(ue*g.od/pt.nu,pt.Pr)*pt.k/g.od;
   ht=blend(hn2,hf2)*K.cal;
   let Aeff;
-  if(C.fins){const fp=finPack(g,ht);Aeff=fp.Aeff*g.Lt*g.nt;
+  if(C.fins&&g.ts.shape==='round'){
+   const fp=finPack(g,ht);Aeff=fp.Aeff*g.Lt*g.nt;
    fv=fp.vol*g.Lt*g.nt;}
-  else{Aeff=Math.PI*g.od*g.Lt*g.nt;fv=0;}
+  else{Aeff=g.ts.Pout*g.Lt*g.nt;fv=0;}
   pl=plateFin(g,ht,serp,C.plt/1000,C.plc);
   Ao=Aeff+pl.A;
   Rb=1/Math.max(hc*g.Ac,1e-9);
@@ -333,13 +364,15 @@ function solve(cOverride){
  const rCore=1/(4*Math.PI*D.k_rad*g.H);
  const Tcore=Tb+(Q/g.N)*rCore;
  const Pp=waterPump(g);
- const Pc=serp?serpP(f,g,C.u,C.plt/1000):stir?stirP(f,g,C.u):0;
+ const xl=ext?extP(f,g,C.u,C.plt/1000):null;
+ const Pc=ext?xl.P:serp?serpP(f,g,C.u,C.plt/1000)
+  :stir?stirP(f,g,C.u):0;
  const chl=chiller(Math.max(Qw,1)+Pp,C.twin,C.tamb);
  const ms=massesCalc(g,fv,pl.m);
  const films=[['can-oil film',Rb],['oil-tube film',Rot],
   ['water film',Rin]];
  films.sort((a,b)=>b[1]-a[1]);
- return{g,Tb,Tcore,Til,Q,Qw,Qatm,dTw,dTl,spread,uts,
+ return{g,Tb,Tcore,Til,Q,Qw,Qatm,dTw,dTl,spread,uts,xl,
   ue:Math.max(uc,uts),Rb,Rot,Rin,Rw,hc,ht,hw:wat.h,Re:wat.Re,
   regime:wat.regime,Ao,pl,Pp,Pc,chl,ms,
   weak:films[0][0],
@@ -402,7 +435,7 @@ function switchctl(gr,key,label,onch){
   (C[key]?'checked':'')+'>';
  d.querySelector('input').addEventListener('change',e=>{
   C[key]=e.target.checked;(onch||recalc)();});
- gr.appendChild(d);}
+ gr.appendChild(d);return d;}
 function setCtl(key,val){C[key]=val;
  if(INP[key]){INP[key].value=val;LBL[key].textContent=FMTS[key](val);}}
 // LEFT: POWER / PACK / GEOMETRY
@@ -438,14 +471,22 @@ slider(gW,'twin','Inlet',2,40,1,v=>v.toFixed(0)+' °C');
 slider(gW,'nt','Tubes',2,48,1,v=>v.toFixed(0));
 selctl(gW,'loop','Loop fluid',Object.keys(WATERS));
 const gT=group(railR,'TUBES &amp; FINS',true);
-segctl(gT,'tod','Tube OD',[[8,'8'],[10,'10'],[12,'12']],
+segctl(gT,'tshape','Section',
+ [['round','RND'],['square','SQ'],['rect','RECT']],
+ ()=>{vis();recalc();});
+const odRow=segctl(gT,'tod','Tube OD',[[8,'8'],[10,'10'],[12,'12']],
  ()=>recalc());
+const twRow=slider(gT,'tw','Width / side',4,25,0.5,
+ v=>v.toFixed(1)+' mm');
+const thRow=slider(gT,'th','Height',4,25,0.5,
+ v=>v.toFixed(1)+' mm');
 segctl(gT,'twall','Wall',[[0.5,'0.5'],[0.8,'0.8'],[1,'1.0']]);
 selctl(gT,'tmat','Material',Object.keys(KT));
-switchctl(gT,'fins','Annular fins');
+const fRow=switchctl(gT,'fins','Annular fins');
 const gC=group(railR,'CIRCULATION',true);
 segctl(gC,'circ','Mode',
- [['thermosiphon','THERM'],['stirred','STIR'],['serpentine','SERP']],
+ [['thermosiphon','THERM'],['stirred','STIR'],
+  ['serpentine','SERP'],['extpump','EXT']],
  ()=>{vis();recalc();});
 const uRow=slider(gC,'u','Velocity',0.005,0.15,0.005,
  v=>(v*1000).toFixed(0)+' mm/s');
@@ -453,10 +494,22 @@ const pRow=slider(gC,'plt','Plate thickness',1,2,0.5,
  v=>v.toFixed(1)+' mm');
 const cRow=slider(gC,'plc','Plate contact',0.4,1,0.05,
  v=>v.toFixed(2));
-function vis(){uRow.style.display=
-  C.circ==='thermosiphon'?'none':'block';
- pRow.style.display=C.circ==='serpentine'?'block':'none';
- cRow.style.display=C.circ==='serpentine'?'block':'none';}
+const dRow=slider(gC,'pipeD','Ext pipe bore',6,50,1,
+ v=>v.toFixed(0)+' mm');
+const lRow=slider(gC,'pipeL','Ext pipe length',0.5,8,0.25,
+ v=>v.toFixed(2)+' m');
+function vis(){const ext=C.circ==='extpump',
+  pl=C.circ==='serpentine'||ext,rnd=C.tshape==='round';
+ uRow.style.display=C.circ==='thermosiphon'?'none':'block';
+ pRow.style.display=pl?'block':'none';
+ cRow.style.display=pl?'block':'none';
+ dRow.style.display=ext?'block':'none';
+ lRow.style.display=ext?'block':'none';
+ odRow.style.display=rnd?'block':'none';
+ twRow.style.display=rnd?'none':'block';
+ thRow.style.display=C.tshape==='rect'?'block':'none';
+ fRow.style.display=rnd?'block':'none';
+ if(!rnd)C.fins=false;}
 vis();
 // ------------- PFD -------------
 const pfd=document.getElementById('cp-pfd');
@@ -502,8 +555,11 @@ function recalc(){res=solve();
  $('s_c2').textContent='duty '+((res.Qw+res.Pp)/1000).toFixed(2)+
   ' kW · COP '+res.chl.COP.toFixed(1);
  $('p_p').textContent=(res.Pp+res.Pc).toFixed(1)+' W';
- $('s_p').textContent='pump '+res.Pp.toFixed(1)+
-  (res.Pc>0?' + circ '+res.Pc.toFixed(1):'');
+ $('s_p').textContent=res.xl
+  ?('oil '+(res.xl.dp/1000).toFixed(1)+' kPa · pipe '
+    +res.xl.v.toFixed(1)+' m/s · '+res.xl.lpm.toFixed(0)+' L/min')
+  :('pump '+res.Pp.toFixed(1)+
+    (res.Pc>0?' + circ '+res.Pc.toFixed(1):''));
  $('p_e').textContent=res.ms.E.toFixed(1)+' kWh';
  $('s_e').textContent=res.g.N+' cells · '+
   (Math.round(C.ns)*D.v_nom).toFixed(0)+' V';
@@ -533,7 +589,7 @@ $('cp-maxc').addEventListener('click',()=>{const v=maxC();
  setCtl('c',Math.max(Math.floor((v-0.02)*100)/100,0.2));recalc();});
 $('cp-turb').addEventListener('click',()=>{const W_=WATERS[C.loop];
  const g=res.g;
- const need=3100*Math.PI*W_.mu*g.di*g.nt/4*60/W_.rho*1000;
+ const need=3100*W_.mu*g.ts.Pin*g.nt/4*60/W_.rho*1000;
  setCtl('flow',Math.min(Math.ceil(need*2)/2,60));recalc();});
 $('cp-dry').addEventListener('click',()=>{
  setCtl('twin',Math.min(C.tamb+5,40));recalc();});
@@ -547,12 +603,16 @@ document.querySelectorAll('.preset').forEach(b=>{
   if(p==='eco'){setCtl('twin',30);C.circ='thermosiphon';}
   if(p==='c4'){setCtl('c',4);C.circ='serpentine';
    setCtl('u',0.08);setCtl('flow',30);setCtl('twin',15);}
+  if(p==='ext'){C.circ='extpump';setCtl('u',0.05);
+   setCtl('plt',1.5);setCtl('plc',0.8);
+   setCtl('pipeD',19);setCtl('pipeL',2.5);}
   document.querySelectorAll('.seg button').forEach(x=>{
-   if(['THERM','STIR','SERP'].includes(x.textContent))
+   if(['THERM','STIR','SERP','EXT'].includes(x.textContent))
     x.classList.toggle('on',
      (x.textContent==='THERM'&&C.circ==='thermosiphon')||
      (x.textContent==='STIR'&&C.circ==='stirred')||
-     (x.textContent==='SERP'&&C.circ==='serpentine'));});
+     (x.textContent==='SERP'&&C.circ==='serpentine')||
+     (x.textContent==='EXT'&&C.circ==='extpump'));});
   vis();recalc();});});
 // copy bridge
 $('cp-copy').addEventListener('click',()=>{
@@ -561,6 +621,7 @@ $('cp-copy').addEventListener('click',()=>{
   kdcir:C.kdcir,pitch:C.pitch,arr:C.arr,tplane:C.tplane,
   flow:C.flow,twin:C.twin,ntub:Math.round(C.nt),loop:C.loop,
   tod:C.tod,twall:C.twall,tmat:C.tmat,fins:C.fins,circ:C.circ,
+  tshape:C.tshape,tw:C.tw,th:C.th,pipeD:C.pipeD,pipeL:C.pipeL,
   u:C.u,plt:C.plt,plc:C.plc,tlim:C.tlim,limc:C.limc,hext:C.hext});
  const done=()=>{status.textContent=
   'copied - paste in the apply box below';
@@ -585,7 +646,8 @@ function fit(){Wc=cv.clientWidth||760;Hc=cv.clientHeight||430;
  ix.setTransform(d,0,0,d,0,0);}
 fit();if(window.ResizeObserver)new ResizeObserver(fit).observe(cv);
 let R={},sel=null,hover=null,mx=-1,my=-1,tsec=0;
-function geomDraw(){const mL=20,mR=20,top=24,bot=16;
+function geomDraw(){
+ const mL=C.circ==='extpump'?86:20,mR=20,top=24,bot=16;
  const bx=mL,by=top,bw=Wc-mL-mR,bh=Hc-top-bot;
  const g=res.g;
  const oilTop=by+bh*(1-g.fillh/g.Lz);
@@ -596,7 +658,14 @@ function geomDraw(){const mL=20,mR=20,top=24,bot=16;
  R={bx,by,bw,bh,oilTop,cTop,cBot,tubeY,
   n:Math.min(g.nrow,14),nt:Math.min(g.nt,14)};
  R.pitch=bw/(R.n+0.6);R.cw=R.pitch*(g.Dm/g.pm);
- R.tp=bw/(R.nt+1);}
+ R.tp=bw/(R.nt+1);
+ R.serp=(C.circ==='serpentine'||C.circ==='extpump');
+ R.unit=bw/R.n;R.cwS=R.unit*0.54;R.plZ=R.unit-R.cwS;
+ R.plW=R.plZ*0.62;R.midY=(cTop+cBot)/2;
+ R.tr=Math.max(3,Math.min(R.plW*0.46,9));}
+function cellX(i){return R.serp?R.bx+R.unit*i+(R.unit-R.cwS-R.plZ)/2+2
+ :R.bx+R.pitch*(0.4+i)+(R.pitch-R.cw)/2;}
+function plateX(i){return cellX(i)+R.cwS+(R.plZ-R.plW)/2;}
 function tcol(T,a){const lo=Math.min(C.twin,C.tamb),
  hi=Math.max(res.Tcore,res.Tb+1,lo+8);
  let f=Math.min(Math.max((T-lo)/(hi-lo),0),1);
@@ -607,7 +676,7 @@ function rrect(x,y,w,h,r,f,s){cx.beginPath();cx.moveTo(x+r,y);
  cx.arcTo(x,y+h,x,y,r);cx.arcTo(x,y,x+w,y,r);cx.closePath();
  if(f)cx.fill();if(s)cx.stroke();}
 function field(px,py){const u=res.ue*1000*4;
- if(C.circ==='serpentine'){const l=Math.floor(py*R.n);
+ if(R.serp){const l=Math.floor(py*R.n);
   return{vx:(l%2?-1:1)*u*2.4,vy:Math.sin(px*14+l*2)*2.5};}
  const k=C.circ==='stirred'?1:3,A=u*2.2;
  return{vx:A*Math.sin(k*Math.PI*px)*Math.cos(Math.PI*py),
@@ -616,6 +685,14 @@ const oilP=[],watP=[];
 for(let i=0;i<160;i++)oilP.push({x:Math.random(),y:Math.random()});
 for(let i=0;i<70;i++)watP.push({x:Math.random(),lane:i%14});
 function hitTest(x,y){
+ if(R.serp){
+  for(let i=0;i<R.n-1;i++){const tcx=plateX(i)+R.plW/2;
+   if(Math.hypot(x-tcx,y-R.midY)<R.tr+6)return 'tubes';}
+  for(let i=0;i<R.n;i++){const cl=cellX(i);
+   if(x>=cl&&x<=cl+R.cwS&&y>=R.cTop&&y<=R.cBot)return 'cells';}
+  if(x>R.bx&&x<R.bx+R.bw&&y>R.oilTop&&y<R.by+R.bh)return 'oil';
+  if(x>R.bx&&x<R.bx+R.bw&&y>R.by&&y<R.oilTop)return 'head';
+  return null;}
  for(let j=0;j<R.nt;j++){const tx=R.bx+R.tp*(j+1);
   if(Math.hypot(x-tx,y-R.tubeY)<15)return 'tubes';}
  if(y>=R.cTop&&y<=R.cBot&&x>R.bx&&x<R.bx+R.bw)return 'cells';
@@ -642,7 +719,9 @@ function stText(id){
   (C.circ==='serpentine'?', plates':''),
   h:'oil h '+res.ht.toFixed(0)+' · Re '+res.Re.toFixed(0)+
   ' ('+res.regime+')',
-  b:'<p>'+res.g.nt+' x '+C.tod+' mm '+C.tmat.toLowerCase()+
+  b:'<p>'+res.g.nt+' x '+(C.tshape==='round'?C.tod+' mm':
+   C.tshape==='square'?C.tw+' mm square':
+   C.tw+'x'+C.th+' mm rect')+' '+C.tmat.toLowerCase()+
   ', L = '+res.g.Lt.toFixed(2)+' m each. Second film h = '+
   res.ht.toFixed(0)+', A = <b>'+res.Ao.toFixed(1)+' m²</b>'+
   (res.pl.A>0?' (plates +'+res.pl.A.toFixed(1)+' m², η '+
@@ -731,39 +810,58 @@ function frame(now){try{
  cx.strokeStyle='rgba(245,158,11,.6)';cx.lineWidth=1;
  cx.beginPath();cx.moveTo(bx,oilTop);cx.lineTo(bx+bw,oilTop);
  cx.stroke();
- for(let i=0;i<n;i++){const x=bx+pitch*(0.4+i)+(pitch-cw)/2;
-  const gcx=x+cw/2,gcy=(cTop+cBot)/2;
-  const gl=cx.createRadialGradient(gcx,gcy,2,gcx,gcy,cw*1.7);
+ const serp=R.serp,unit=R.unit,cwS=R.cwS,plZ=R.plZ,plW=R.plW,
+  midY=R.midY,tr=R.tr;
+ for(let i=0;i<n;i++){const x=cellX(i),w=serp?cwS:cw;
+  const gcx=x+w/2;
+  const gl=cx.createRadialGradient(gcx,midY,2,gcx,midY,w*1.7);
   const a=Math.min(0.12+res.Q/1000*0.05,0.4);
   gl.addColorStop(0,'rgba(241,82,82,'+a+')');
   gl.addColorStop(1,'rgba(241,82,82,0)');
-  cx.fillStyle=gl;
-  cx.fillRect(x-cw,cTop-cw,cw*3,(cBot-cTop)+2*cw);
+  cx.fillStyle=gl;cx.fillRect(x-w,cTop-w,w*3,(cBot-cTop)+2*w);
   cx.fillStyle=tcol(res.Tb,0.96);
   cx.strokeStyle='rgba(255,255,255,.30)';cx.lineWidth=1;
-  rrect(x,cTop,cw,cBot-cTop,5,true,true);
+  rrect(x,cTop,w,cBot-cTop,5,true,true);
   cx.fillStyle=tcol(res.Tcore,0.95);
-  rrect(x+cw*0.30,cTop+4,cw*0.40,(cBot-cTop)-8,4,true,false);
-  if(C.circ==='serpentine'&&i<n-1){
-   cx.fillStyle='rgba(139,156,249,.9)';
-   cx.fillRect(x+cw+(pitch-cw)/2-1.2,cTop,2.4,cBot-cTop);}}
- for(let j=0;j<nt;j++){const tx=bx+tp*(j+1);
+  rrect(x+w*0.30,cTop+4,w*0.40,(cBot-cTop)-8,4,true,false);
+  if(serp&&i<n-1){const plx=plateX(i);
+   const mg=cx.createLinearGradient(plx,0,plx+plW,0);
+   mg.addColorStop(0,'rgba(148,163,184,.5)');
+   mg.addColorStop(.5,'rgba(216,224,235,.94)');
+   mg.addColorStop(1,'rgba(148,163,184,.5)');
+   cx.fillStyle=mg;cx.strokeStyle='rgba(226,232,240,.6)';cx.lineWidth=1;
+   rrect(plx,cTop,plW,cBot-cTop,3,true,true);
+   const tcx=plx+plW/2;
+   cx.strokeStyle='rgba(120,134,158,.85)';cx.lineWidth=1.5;
+   cx.beginPath();cx.moveTo(tcx,cTop+5);cx.lineTo(tcx,cBot-5);cx.stroke();
+   cx.fillStyle='rgba(71,85,105,.96)';
+   cx.beginPath();cx.arc(tcx,midY,tr+1.6,0,6.283);cx.fill();
+   cx.fillStyle=tcol(C.twin+res.dTw*0.5,0.96);
+   cx.beginPath();cx.arc(tcx,midY,tr,0,6.283);cx.fill();
+   cx.fillStyle='rgba(186,230,253,.75)';
+   cx.beginPath();cx.arc(tcx,midY,tr*0.42,0,6.283);cx.fill();}}
+ if(!serp){for(let j=0;j<nt;j++){const tx=bx+tp*(j+1);
   cx.fillStyle='rgba(165,180,204,.4)';
   cx.beginPath();cx.arc(tx,tubeY,11,0,6.283);cx.fill();
   cx.fillStyle='#D97706';
-  cx.beginPath();cx.arc(tx,tubeY,5.5,0,6.283);cx.fill();}
- cx.fillStyle='#7DD3FC';cx.font='10px Inter';
- cx.fillText('in '+C.twin.toFixed(0)+'°C',bx+4,tubeY-16);
- cx.fillStyle=tcol(C.twin+res.dTw,1);
- cx.fillText('out '+(C.twin+res.dTw).toFixed(1)+'°C',
-  bx+bw-64,tubeY-16);
- for(const p of watP){p.x+=dt*Math.min(C.flow/20,2)*0.25;
-  if(p.x>1)p.x-=1;
-  const tx=bx+tp*((p.lane%nt)+1),ang=p.x*6.283;
+  cx.beginPath();cx.arc(tx,tubeY,5.5,0,6.283);cx.fill();}}
+ cx.font='10px Inter';
+ if(serp){cx.fillStyle='#93C5FD';
+  cx.fillText('tubes bonded in the plates, running INTO the page  ·  in '+
+   C.twin.toFixed(0)+'°C (front) -> '+(C.twin+res.dTw).toFixed(1)+
+   '°C (back)',bx+4,by+14);}
+ else{cx.fillStyle='#7DD3FC';
+  cx.fillText('in '+C.twin.toFixed(0)+'°C',bx+4,tubeY-16);
+  cx.fillStyle=tcol(C.twin+res.dTw,1);
+  cx.fillText('out '+(C.twin+res.dTw).toFixed(1)+'°C',bx+bw-64,tubeY-16);}
+ for(const p of watP){p.x+=dt*Math.min(C.flow/20,2)*0.25;if(p.x>1)p.x-=1;
+  const ang=p.x*6.283;let tx,ty,rr;
+  if(serp){const ln=p.lane%Math.max(n-1,1);tx=plateX(ln)+plW/2;ty=midY;
+   rr=tr*0.6;}
+  else{tx=bx+tp*((p.lane%nt)+1);ty=tubeY;rr=3.4;}
   cx.fillStyle=tcol(C.twin+res.dTw*p.x,0.95);
-  cx.beginPath();
-  cx.arc(tx+Math.cos(ang)*3.4,tubeY+Math.sin(ang)*3.4,1.8,0,6.283);
-  cx.fill();}
+  cx.beginPath();cx.arc(tx+Math.cos(ang)*rr,ty+Math.sin(ang)*rr,
+   serp?1.4:1.8,0,6.283);cx.fill();}
  for(const p of oilP){const v=field(p.x,p.y);
   p.x+=v.vx*dt/bw*3.2;p.y+=v.vy*dt/(by+bh-oilTop)*3.2;
   if(p.x<0.005)p.x=0.005;if(p.x>0.995)p.x=0.995;
@@ -775,16 +873,57 @@ function frame(now){try{
  cx.strokeStyle='rgba(248,113,113,'+(0.35+0.5*pulse)+')';
  cx.lineWidth=2.5;
  if(res.weakRegion==='tubes'){
-  const tx=bx+tp*(Math.floor(nt/2)+1);
-  cx.beginPath();cx.arc(tx,tubeY,17+3*pulse,0,6.283);cx.stroke();
-  cx.fillStyle='rgba(248,113,113,.95)';cx.font='600 11px Inter';
-  cx.fillText('weakest: '+res.weak,tx+24,tubeY+4);}
- else{const i=Math.floor(n/2),
-  x=bx+pitch*(0.4+i)+(pitch-cw)/2;
-  rrect(x-3-2*pulse,cTop-3-2*pulse,cw+6+4*pulse,
+  if(serp){const ln=Math.floor((n-1)/2),tcx=plateX(ln)+plW/2;
+   cx.beginPath();cx.arc(tcx,midY,tr+7+3*pulse,0,6.283);cx.stroke();
+   cx.fillStyle='rgba(248,113,113,.95)';cx.font='600 11px Inter';
+   cx.fillText('weakest: '+res.weak,tcx+14,midY-tr-6);}
+  else{const tx=bx+tp*(Math.floor(nt/2)+1);
+   cx.beginPath();cx.arc(tx,tubeY,17+3*pulse,0,6.283);cx.stroke();
+   cx.fillStyle='rgba(248,113,113,.95)';cx.font='600 11px Inter';
+   cx.fillText('weakest: '+res.weak,tx+24,tubeY+4);}}
+ else{const i=Math.floor(n/2),x=cellX(i),w=serp?cwS:cw;
+  rrect(x-3-2*pulse,cTop-3-2*pulse,w+6+4*pulse,
    (cBot-cTop)+6+4*pulse,7,false,true);
   cx.fillStyle='rgba(248,113,113,.95)';cx.font='600 11px Inter';
-  cx.fillText('weakest: '+res.weak,x+cw+10,cTop+14);}
+  cx.fillText('weakest: '+res.weak,x+w+10,cTop+14);}
+ if(C.circ==='extpump'){
+  const yS=by+bh-14,yR=oilTop+16,xw=bx-6,xp2=34,
+   pcx=(xw+xp2)/2-4,pcy=(yS+yR)/2,pr=13;
+  cx.strokeStyle='rgba(245,158,11,.85)';cx.lineWidth=4;
+  cx.lineCap='round';
+  cx.beginPath();cx.moveTo(xw,yS);cx.lineTo(xp2,yS);
+  cx.lineTo(xp2,pcy+pr);cx.stroke();
+  cx.beginPath();cx.moveTo(xp2,pcy-pr);cx.lineTo(xp2,yR);
+  cx.lineTo(xw,yR);cx.stroke();
+  cx.fillStyle='#0B1220';cx.strokeStyle='#F59E0B';cx.lineWidth=2.5;
+  cx.beginPath();cx.arc(xp2,pcy,pr,0,6.283);cx.fill();cx.stroke();
+  const ra=tsec*(2+C.u*40);
+  cx.strokeStyle='rgba(252,211,77,.9)';cx.lineWidth=2;
+  for(let k=0;k<3;k++){const a=ra+k*2.094;
+   cx.beginPath();cx.moveTo(xp2,pcy);
+   cx.lineTo(xp2+Math.cos(a)*(pr-4),pcy+Math.sin(a)*(pr-4));
+   cx.stroke();}
+  const path=[[xw,yS],[xp2,yS],[xp2,pcy+pr],[xp2,pcy-pr],
+   [xp2,yR],[xw,yR]];
+  let Ltot=0;const seg=[];
+  for(let k=0;k<path.length-1;k++){const L2=Math.hypot(
+   path[k+1][0]-path[k][0],path[k+1][1]-path[k][1]);
+   seg.push(L2);Ltot+=L2;}
+  cx.fillStyle='rgba(251,191,36,.95)';
+  for(let k=0;k<6;k++){
+   let s=((tsec*C.u*260)+k*Ltot/6)%Ltot,j=0;
+   while(s>seg[j]){s-=seg[j];j++;}
+   const fx=path[j][0]+(path[j+1][0]-path[j][0])*s/seg[j],
+    fy=path[j][1]+(path[j+1][1]-path[j][1])*s/seg[j];
+   cx.beginPath();cx.arc(fx,fy,2.1,0,6.283);cx.fill();}
+  cx.fillStyle='#FCD34D';cx.font='600 9px Inter';
+  cx.fillText('PUMP',xp2-13,pcy+pr+12);
+  if(res.xl){cx.fillStyle='#94A3B8';cx.font='8px Inter';
+   cx.fillText((res.xl.dp/1000).toFixed(1)+' kPa',4,pcy-pr-8);
+   cx.fillText(res.xl.P.toFixed(0)+' W',4,pcy-pr+2);}
+  cx.fillStyle='#64748B';cx.font='8px Inter';
+  cx.fillText('closed loop',2,yS+11);
+  cx.fillText('no ext. HX',2,yR-8);}
  cx.fillStyle='#64748B';cx.font='9px Inter';
  cx.fillText(res.g.N+' cells · box '+(res.g.Lx*1000).toFixed(0)+
   ' x '+(res.g.Ly*1000).toFixed(0)+' x '+

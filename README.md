@@ -586,3 +586,30 @@ and shows the circulation controls by mode (velocity is hidden for a pure
 thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
+
+## v10.0
+
+The closed-loop release. Four threads: the external oil pump architecture, real tube cross-sections, the tube-count/plate coupling, and report files.
+
+- **External pump loop (closed)** is now a first-class circulation mode. The dielectric leaves the pack, passes an external pump, and returns; there is no external heat exchanger, the internal water tubes still reject the heat, and the oil and water circuits never meet. The solver drives the same two oil films through the loop velocity; the new hydraulics (`ext_loop_pump`) split the pressure drop into pack channels (plate slots, or the row semi-channels of the bare array with a cylinder-bank penalty) plus external pipework with fittings, and size the motor. The System tab shows flow, dp split, head, pipe-velocity check and a motor class; the BOM gains pump and pipework rows; a schematic and an impact discussion explain the serviceability trade. The cockpit gets an EXT mode with pipe bore/length sliders, an animated external loop and pump on the canvas, and dp/W readouts.
+- **Tube cross-sections: Round, Square, Rectangular.** Proper duct physics throughout: Shah-London laminar Nu and f-Re by aspect ratio, Gnielinski on the hydraulic diameter, flat-wall conduction for non-round walls, true metal mass and oil displacement, and the flat-face plate bond noted in the contact help. Annular fins are gated to round tubes. Same physics in the cockpit.
+- **Tube count is coupled to the plates.** Plates without a bonded tube are passive spreaders, not fins: the plate area is derated by the served fraction min(1, tubes/plates), and the Design tab suggests symmetric counts. The smoke test asserts the coupling and fixes a stale-geometry bug in the serpentine check.
+- **Report export.** The Report tab now builds real Word (.docx), PowerPoint (.pptx) and PDF files of the full report - every section, table and figure - via the new `report_export.py` (python-docx, python-pptx, fpdf2, kaleido 0.2.1 pinned for figures).
+- Shared `correlations.water_nu` takes the laminar asymptote as a parameter so the zonal solver stays on the identical curve.
+
+## v9.8 Serpentine 2D view fixed: the plates are now bonded to the tubes
+The cockpit's flat 2D view previously drew the water tubes as a separate
+row of circles floating above the cells, with the cooling plates reduced
+to hairline strips between the cell columns - so the metal did not read as
+connected to the pipes, and it did not look like a serpentine at all. The
+2D drawing now renders the architecture correctly: in serpentine mode the
+cells sit as narrower bars, a proper metal cooling plate fills each gap
+between cell columns, and the water tube is drawn bonded inside that plate,
+shown end-on because it runs through-plane (into the page). A bonding seat
+line ties the tube to the plate, the coolant animates in the embedded
+tubes, and the label reads "tubes bonded in the plates, running into the
+page - in X°C (front) to Y°C (back)". Hover and the weakest-link highlight
+follow the embedded tubes. The non-serpentine modes are unchanged (tubes in
+their plane, full-width cells). This makes the 2D view consistent with the
+3D view added in v9.7, and both now show the real cell -> oil film -> plate
+-> tube -> water path.

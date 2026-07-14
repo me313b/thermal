@@ -10,19 +10,23 @@ the film coefficient is continuous through transition (no step).
 import math
 
 
-def water_nu(Re, Pr, d_i, L):
-    """Internal forced-convection Nusselt number for water in a round
-    tube. Continuous across the laminar-turbulent transition.
+def water_nu(Re, Pr, d_i, L, lam_nu=3.66):
+    """Internal forced-convection Nusselt number for water in a duct.
+    Continuous across the laminar-turbulent transition.
 
-    Re  Reynolds number (4 mdot / (pi mu d_i))
-    Pr  Prandtl number
-    d_i tube inner diameter [m]
-    L   heated length [m]
+    Re     Reynolds number on the hydraulic diameter (4 mdot/(mu P_wet))
+    Pr     Prandtl number
+    d_i    hydraulic diameter [m]
+    L      heated length [m]
+    lam_nu fully-developed laminar Nusselt asymptote for the duct
+           shape (Shah & London): 3.66 round, 2.98 square, up to 7.54
+           for a wide slot. The Hausen entry-length term is retained
+           unchanged (a Dh-based approximation for non-round ducts).
     returns (Nu, regime)
     """
     def nu_lam(Re_):
         gz = (d_i / L) * Re_ * Pr
-        return 3.66 + 0.0668 * gz / (1.0 + 0.04 * gz ** (2.0 / 3.0))
+        return lam_nu + 0.0668 * gz / (1.0 + 0.04 * gz ** (2.0 / 3.0))
 
     def nu_turb(Re_):
         f = (0.790 * math.log(max(Re_, 3000.0)) - 1.64) ** -2

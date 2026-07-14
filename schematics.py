@@ -208,3 +208,74 @@ def schematic_network(d, lay):
     fig.update_xaxes(range=[-0.1, 4.1])
     fig.update_yaxes(range=[-0.1, 5.7])
     return fig
+
+
+def schematic_oil_loop(d, g, xp=None):
+    """Closed dielectric loop with an EXTERNAL pump and NO external heat
+    exchanger: oil leaves the pack, passes the pump, and returns; the
+    internal water tubes (crossing the pack) do the heat rejection, so
+    the oil and water circuits never meet."""
+    fig = go.Figure()
+    _base(fig, 320, "Closed oil loop - external pump, internal water HX")
+    # pack box
+    fig.add_shape(type="rect", x0=0.30, y0=0.12, x1=0.94, y1=0.88,
+                  line=dict(color="#94A3B8", width=2),
+                  fillcolor="rgba(245,158,11,.10)")
+    fig.add_annotation(x=0.62, y=0.93, text="pack (flooded)",
+                       showarrow=False, font=dict(size=11, color="#64748B"))
+    # cells + plates + embedded tubes (three units)
+    for i in range(3):
+        x0 = 0.38 + i * 0.17
+        fig.add_shape(type="rect", x0=x0, y0=0.22, x1=x0 + 0.075, y1=0.78,
+                      line=dict(color="#B45309", width=1),
+                      fillcolor="rgba(241,82,82,.55)")
+        if i < 2:
+            px = x0 + 0.095
+            fig.add_shape(type="rect", x0=px, y0=0.22, x1=px + 0.035,
+                          y1=0.78, line=dict(color="#CBD5E1", width=1),
+                          fillcolor="rgba(203,213,225,.75)")
+            fig.add_shape(type="rect", x0=px + 0.006, y0=0.46,
+                          x1=px + 0.029, y1=0.54,
+                          line=dict(color="#0369A1", width=1),
+                          fillcolor="#38BDF8")
+    fig.add_annotation(x=0.62, y=0.50, ax=0.62, ay=0.50, text="",
+                       showarrow=False)
+    fig.add_annotation(x=0.655, y=0.36, text="water tubes<br>(into page)",
+                       showarrow=False, font=dict(size=9, color="#0369A1"))
+    # oil channel arrows through the pack (left to right)
+    for yy in (0.30, 0.50, 0.70):
+        fig.add_annotation(x=0.90, y=yy, ax=0.34, ay=yy,
+                           xref="x", yref="y", axref="x", ayref="y",
+                           showarrow=True, arrowhead=3, arrowwidth=1.6,
+                           arrowcolor="#F59E0B")
+    # external loop: supply (bottom) and return (top) to the pump
+    fig.add_shape(type="line", x0=0.30, y0=0.20, x1=0.10, y1=0.20,
+                  line=dict(color="#F59E0B", width=4))
+    fig.add_shape(type="line", x0=0.10, y0=0.20, x1=0.10, y1=0.80,
+                  line=dict(color="#F59E0B", width=4))
+    fig.add_shape(type="line", x0=0.10, y0=0.80, x1=0.30, y1=0.80,
+                  line=dict(color="#F59E0B", width=4))
+    fig.add_annotation(x=0.20, y=0.84, ax=0.13, ay=0.84, showarrow=True,
+                       arrowhead=3, arrowcolor="#F59E0B", text="")
+    fig.add_annotation(x=0.13, y=0.16, ax=0.20, ay=0.16, showarrow=True,
+                       arrowhead=3, arrowcolor="#F59E0B", text="")
+    # pump symbol
+    fig.add_shape(type="circle", x0=0.055, y0=0.42, x1=0.145, y1=0.58,
+                  line=dict(color="#F59E0B", width=3),
+                  fillcolor="rgba(245,158,11,.15)")
+    fig.add_annotation(x=0.10, y=0.50, text="P", showarrow=False,
+                       font=dict(size=15, color="#B45309"))
+    lab = "external oil pump"
+    if xp:
+        lab += (f"<br>{xp['Vdot_lpm']:.0f} L/min - "
+                f"{xp['dp']/1000:.1f} kPa - {xp['P']:.0f} W")
+    fig.add_annotation(x=0.10, y=0.32, text=lab, showarrow=False,
+                       font=dict(size=10, color="#B45309"))
+    fig.add_annotation(x=0.10, y=0.66, text="no external HX",
+                       showarrow=False, font=dict(size=9, color="#64748B"))
+    fig.add_annotation(
+        x=0.62, y=0.05,
+        text="oil loop (amber) and water loop (blue) never meet - the "
+             "tubes reject the heat inside the pack",
+        showarrow=False, font=dict(size=10, color="#475569"))
+    return fig

@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v9.7"
+APP_VERSION = "v10.0"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -172,14 +172,19 @@ def h_tube_side(fl, T_bulk, T_wall, D_o, u_oil) -> dict:
     return dict(h=blend_mixed(h_n, h_f), h_nat=h_n, h_for=h_f,
                 Ra=Ra, Re=Re, Pr=p["Pr"])
 
-def h_water_inside(loop: dict, mdot_tube: float, d_i: float, L: float) -> dict:
+def h_water_inside(loop: dict, mdot_tube: float, d_i: float, L: float,
+                   lam_nu: float = 3.66, P_wet: float = None) -> dict:
     """Hausen (laminar, entry-corrected) / Gnielinski (turbulent) with a
     linear bridge across the 2300-3000 transition. Delegates to
-    correlations.water_nu so the zonal solver uses the identical curve."""
+    correlations.water_nu so the zonal solver uses the identical curve.
+    d_i is the hydraulic diameter; for non-round ducts pass the wetted
+    perimeter P_wet (Re = 4 mdot / (mu P_wet)) and the shape's laminar
+    asymptote lam_nu (Shah & London)."""
     mu, k, cp = loop["mu"], loop["k"], loop["cp"]
     Pr = mu * cp / k
-    Re = 4.0 * mdot_tube / (math.pi * mu * d_i) if mdot_tube > 0 else 0.0
-    Nu, regime = _water_nu(Re, Pr, d_i, L)
+    Pw = P_wet if P_wet else math.pi * d_i
+    Re = 4.0 * mdot_tube / (mu * Pw) if mdot_tube > 0 else 0.0
+    Nu, regime = _water_nu(Re, Pr, d_i, L, lam_nu)
     return dict(h=Nu * k / d_i, Re=Re, Pr=Pr, Nu=Nu, regime=regime)
 
 # ------------------------------------------------------------------ #
@@ -211,6 +216,70 @@ def fin_pack(d_o, H_f, t_f, p_f, k_fin, h_oil) -> dict:
 K_TUBE = {"Copper": 385.0, "Aluminium": 205.0, "Stainless steel": 16.0}
 RHO_TUBE = {"Copper": 8940.0, "Aluminium": 2700.0, "Stainless steel": 7900.0}
 
+
+# Shah & London fully-developed laminar constants for rectangular ducts,
+# by aspect ratio b/a (short/long side): f*Re and Nu_T (const wall T).
+_RECT_ASP = [0.125, 0.25, 1.0 / 3.0, 0.5, 1.0]
+_RECT_FRE = [82.34, 72.93, 68.36, 62.19, 56.91]
+_RECT_NUT = [5.60, 4.44, 3.96, 3.39, 2.98]
+
+
+def _interp(x, xs, ys):
+    if x <= xs[0]:
+        return ys[0]
+    for i in range(1, len(xs)):
+        if x <= xs[i]:
+            w = (x - xs[i - 1]) / (xs[i] - xs[i - 1])
+            return ys[i - 1] + w * (ys[i] - ys[i - 1])
+    return ys[-1]
+
+
+def tube_section(d) -> dict:
+    """Water-tube cross-section properties for Round / Square /
+    Rectangular tubes. Returns flow area, wetted perimeters, hydraulic
+    diameter, metal cross-section, the flat contact width available to
+    bond a plate, and the shape's laminar constants (Shah & London:
+    f*Re and Nu_T). Round keeps the classical 64 / 3.66."""
+    t = d.get("tube_wall", 0.001)
+    shape = d.get("tube_shape", "Round")
+    if shape == "Square":
+        a_o = d.get("tube_w", d["tube_od"])
+        a_i = max(a_o - 2 * t, 1e-4)
+        A_in, P_in, P_out = a_i ** 2, 4 * a_i, 4 * a_o
+        D_h = a_i
+        A_metal = a_o ** 2 - a_i ** 2
+        A_out_cs = a_o ** 2
+        contact_w, asp = a_o, 1.0
+        fRe, lam_nu = 56.91, 2.98
+    elif shape == "Rectangular":
+        w_o = d.get("tube_w", 0.012)
+        h_o = d.get("tube_h", 0.008)
+        w_i, h_i = max(w_o - 2 * t, 1e-4), max(h_o - 2 * t, 1e-4)
+        A_in = w_i * h_i
+        P_in = 2 * (w_i + h_i)
+        P_out = 2 * (w_o + h_o)
+        D_h = 4 * A_in / P_in
+        A_metal = w_o * h_o - w_i * h_i
+        A_out_cs = w_o * h_o
+        contact_w = h_o                    # vertical face bonded to plate
+        asp = min(w_i, h_i) / max(w_i, h_i)
+        fRe = _interp(asp, _RECT_ASP, _RECT_FRE)
+        lam_nu = _interp(asp, _RECT_ASP, _RECT_NUT)
+    else:                                   # Round
+        od = d["tube_od"]
+        a_i = max(od - 2 * t, 1e-4)
+        A_in = math.pi * a_i ** 2 / 4
+        P_in, P_out = math.pi * a_i, math.pi * od
+        D_h = a_i
+        A_metal = math.pi / 4 * (od ** 2 - a_i ** 2)
+        A_out_cs = math.pi * od ** 2 / 4
+        contact_w, asp = 0.0, 1.0           # line contact only
+        fRe, lam_nu = 64.0, 3.66
+    return dict(shape=shape, A_in=A_in, P_in=P_in, P_out=P_out, D_h=D_h,
+                A_metal=A_metal, A_out_cs=A_out_cs, contact_w=contact_w,
+                aspect=asp, fRe=fRe, lam_nu=lam_nu, t=t)
+
+
 def build_geometry(d: dict) -> dict:
     N = d["Ns"] * d["Np"]
     D, H, p = d["d_cell"], d["h_cell"], d["pitch"]
@@ -225,18 +294,18 @@ def build_geometry(d: dict) -> dict:
     fill_h = Lz - d["gas_gap"]
 
     # heat exchanger tubes (horizontal, in the tube zone above the cells)
-    d_o, t_w = d["tube_od"], d["tube_wall"]
-    d_i = max(d_o - 2 * t_w, 1e-3)
+    ts = tube_section(d)
+    d_i = ts["D_h"]                 # hydraulic diameter for all shapes
     L_tube = max(Lx - 2 * d["manifold_margin"], 0.05) * d["passes"]
-    A_tube_bare = math.pi * d_o * L_tube * d["n_tubes"]
-    A_tube_in = math.pi * d_i * L_tube * d["n_tubes"]
+    A_tube_bare = ts["P_out"] * L_tube * d["n_tubes"]
+    A_tube_in = ts["P_in"] * L_tube * d["n_tubes"]
 
     # areas and volumes
     f_ends = d["end_fraction"]
     A_cells = N * (math.pi * D * H + f_ends * 2 * math.pi * D ** 2 / 4)
     V_box_fill = Lx * Ly * fill_h
     V_cells = N * math.pi * D ** 2 / 4 * H
-    V_tubes = d["n_tubes"] * L_tube * math.pi * d_o ** 2 / 4
+    V_tubes = d["n_tubes"] * L_tube * ts["A_out_cs"]
     A_box_ext = 2 * (Lx * Ly + Lx * Lz + Ly * Lz)
 
     free_per_cell = max(p * row_pitch - math.pi * D ** 2 / 4, 1e-6)
@@ -250,7 +319,7 @@ def build_geometry(d: dict) -> dict:
                 d_i=d_i, L_tube=L_tube, A_tube_bare=A_tube_bare,
                 A_tube_in=A_tube_in, A_cells=A_cells,
                 V_box_fill=V_box_fill, V_cells=V_cells, V_tubes=V_tubes,
-                A_box_ext=A_box_ext)
+                A_box_ext=A_box_ext, tube_sec=ts)
 
 def enclosure_calc(d, g):
     """Wall thickness of the largest flat panel as a stiffened plate under
@@ -270,7 +339,8 @@ def build_masses(d, g, fl, finres) -> dict:
     m_oil = V_oil * fl["rho"]
     m_cells = g["N"] * d["m_cell"]
     rho_t = RHO_TUBE[d["tube_mat"]]
-    m_tubes = rho_t * d["n_tubes"] * g["L_tube"] * math.pi / 4 * (d["tube_od"] ** 2 - g["d_i"] ** 2)
+    _ts = g.get("tube_sec") or tube_section(d)
+    m_tubes = rho_t * d["n_tubes"] * g["L_tube"] * _ts["A_metal"]
     m_fins = V_fins * (2700.0 if d["fin_mat"] == "Aluminium" else 8940.0)
     enc = enclosure_calc(d, g)
     m_struct = d["struct_mass"] if d["struct_mass"] > 0 else enc["m"]
@@ -305,10 +375,18 @@ def solve_steady(d, g, fl, Q_total, T_amb, C_rate=None) -> dict:
     loop = WATER_LOOP[d["loop_fluid"]]
     mdot_tot = d["flow_lpm"] / 60.0 * loop["rho"] / 1000.0
     mdot_tube = mdot_tot / max(d["n_tubes"], 1)
-    wat = h_water_inside(loop, mdot_tube, g["d_i"], g["L_tube"])
+    ts = g.get("tube_sec") or tube_section(d)
+    wat = h_water_inside(loop, mdot_tube, g["d_i"], g["L_tube"],
+                         lam_nu=ts["lam_nu"], P_wet=ts["P_in"])
     R_in = 1.0 / max(wat["h"] * g["A_tube_in"], 1e-9)
-    R_wall = math.log(d["tube_od"] / g["d_i"]) / (
-        2 * math.pi * K_TUBE[d["tube_mat"]] * g["L_tube"] * d["n_tubes"])
+    if ts["shape"] == "Round":
+        R_wall = math.log(d["tube_od"] / g["d_i"]) / (
+            2 * math.pi * K_TUBE[d["tube_mat"]] * g["L_tube"]
+            * d["n_tubes"])
+    else:                                   # flat walls: t / (k A_mean)
+        P_m = 0.5 * (ts["P_in"] + ts["P_out"])
+        R_wall = ts["t"] / (K_TUBE[d["tube_mat"]] * P_m * g["L_tube"]
+                            * d["n_tubes"])
     R_atm = 1.0 / max(d["h_ext"] * g["A_box_ext"], 1e-9)
 
     # initial guesses
@@ -785,6 +863,8 @@ DEFAULTS = dict(
     bottom_gap=0.005, tube_zone=0.035, gas_gap=0.010, end_fraction=0.0,
     coolant="MIVOLT DF7", u_oil=0.0,
     n_tubes=16, tube_od=0.010, tube_wall=0.001, tube_mat="Copper", passes=1,
+    tube_shape="Round", tube_w=0.012, tube_h=0.008,
+    u_loop=0.05, pipe_id=0.019, pipe_len=2.5,
     manifold_margin=0.020,
     fins_on=True, fin_h=0.008, fin_t=0.0005, fin_p=0.004, fin_mat="Aluminium",
     loop_fluid="Water", flow_lpm=10.0, T_water_in=20.0,
@@ -879,12 +959,13 @@ def chain_schematic(res, Q):
 #  Parasitic power                                                    #
 # ------------------------------------------------------------------ #
 def water_pump_power(d, g, loop) -> dict:
+    ts = g.get("tube_sec") or tube_section(d)
     mdot_tot = d["flow_lpm"] / 60.0 * loop["rho"] / 1000.0
     mdot_tube = mdot_tot / max(d["n_tubes"], 1)
-    A_i = math.pi * g["d_i"] ** 2 / 4
+    A_i = ts["A_in"]
     v = mdot_tube / (loop["rho"] * A_i)
     Re = loop["rho"] * v * g["d_i"] / loop["mu"]
-    f = 64.0 / max(Re, 1.0) if Re < 2300 else 0.316 * Re ** -0.25
+    f = ts["fRe"] / max(Re, 1.0) if Re < 2300 else 0.316 * Re ** -0.25
     dp = (f * g["L_tube"] / g["d_i"] + 6.0) * 0.5 * loop["rho"] * v ** 2
     return dict(P=dp * (mdot_tot / loop["rho"]) / 0.35, dp=dp, v=v, Re=Re)
 
@@ -911,7 +992,9 @@ def plate_fin_area(d, g, h_oil):
     eta = math.tanh(m * L) / max(m * L, 1e-9)
     n_pl = max(g["n_rows"] - 1, 1)
     length = max(g["Lx"] - 2 * d["manifold_margin"], 0.1)
-    A_eff = n_pl * 2.0 * L * length * eta * d.get("plate_contact", 0.8)
+    served = min(1.0, d["n_tubes"] / n_pl)   # plates without a tube are
+    A_eff = (n_pl * 2.0 * L * length * eta   # passive spreaders, not fins
+             * d.get("plate_contact", 0.8) * served)
     m_pl = n_pl * L * length * t * (2700.0 if k < 300 else 8940.0)
     return A_eff, eta, m_pl
 
@@ -932,9 +1015,60 @@ def serpentine_pump(d, g, fl, u, T_oil=35.0):
     return dict(P=P, dT_path=0.0 if mdot < 1e-9 else 0.0, mdot=mdot, dp=dp,
                 dT_est=lambda Q: Q / max(mdot * p["cp"], 1e-9))
 
-# ------------------------------------------------------------------ #
-#  Architecture comparator                                            #
-# ------------------------------------------------------------------ #
+def ext_loop_pump(d, g, fl, u, T_oil=35.0):
+    """Closed dielectric loop driven by an EXTERNAL pump: oil leaves the
+    pack, passes the pump, and returns - no external heat exchanger; the
+    internal water tubes still remove the heat, so oil and water never
+    meet. The pump sets the through-pack velocity u.
+
+    Pressure drop = pack side + external pipework:
+      pack, plates ON : laminar slot flow between plate and cells,
+                        dp = 12 mu L u / s^2 per channel (parallel)
+      pack, plates OFF: flow along the row semi-channels of the bare
+                        array, f = 64/Re on the array's D_h over Lx
+      pipes           : Darcy over pipe_len at bore pipe_id, plus
+                        K_fit = 8 minor losses (bends, entries, volute)
+    Electrical power = dp * Vdot / eta (0.35 wire-to-water default).
+    """
+    if u <= 1e-6:
+        return dict(P=0.0, dp=0.0, dp_pack=0.0, dp_pipe=0.0, mdot=0.0,
+                    v_pipe=0.0, Re_pipe=0.0, Vdot_lpm=0.0)
+    p = film_props(fl, T_oil)
+    if d.get("plate_on"):
+        # plate-wall channels: defined slots either side of each plate
+        s = max((d["pitch"] - d["d_cell"] - d.get("plate_t", 0.0015)) / 2,
+                5e-4)
+        Lch = max(g["Lx"] - 2 * d["manifold_margin"], 0.1)
+        n_ch = max(g["n_rows"] - 1, 1) * 2
+        A_pack = s * d["h_cell"] * n_ch
+        dp_pack = (12.0 * p["rho"] * p["nu"] * Lch * u / s ** 2
+                   + 3.0 * 0.5 * p["rho"] * u ** 2)
+    else:
+        # row semi-channels of the bare array: one channel per row gap,
+        # slot width = clear space between rows, with a x2.5 friction
+        # penalty for the flow meandering around the cell cylinders
+        s = max(g["row_pitch"] - d["d_cell"], 1e-3)
+        Lch = max(g["Lx"] - 2 * d["manifold_margin"], 0.1)
+        n_ch = max(g["n_rows"] - 1, 1)
+        A_pack = s * d["h_cell"] * n_ch
+        dp_pack = (2.5 * 12.0 * p["rho"] * p["nu"] * Lch * u / s ** 2
+                   + 3.0 * 0.5 * p["rho"] * u ** 2)
+    mdot = p["rho"] * u * A_pack
+    Vdot = mdot / p["rho"]
+    d_p = max(d.get("pipe_id", 0.019), 3e-3)
+    A_p = math.pi * d_p ** 2 / 4
+    v_p = Vdot / A_p
+    Re_p = v_p * d_p / p["nu"]
+    f_p = 64.0 / max(Re_p, 1.0) if Re_p < 2300 else 0.316 * Re_p ** -0.25
+    L_p = d.get("pipe_len", 2.5)
+    dp_pipe = (f_p * L_p / d_p + 8.0) * 0.5 * p["rho"] * v_p ** 2
+    dp = dp_pack + dp_pipe
+    P = dp * Vdot / 0.35
+    return dict(P=P, dp=dp, dp_pack=dp_pack, dp_pipe=dp_pipe, mdot=mdot,
+                v_pipe=v_p, Re_pipe=Re_p, Vdot_lpm=Vdot * 60000.0)
+
+
+
 def compare_architectures(d, g, fl, masses, T_amb, C_duty=None) -> pd.DataFrame:
     d = dict(d, C1=(C_duty if C_duty else d["C1"]))
     loop = WATER_LOOP[d["loop_fluid"]]
@@ -1824,6 +1958,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop, Q_duty, chil):
 | Magnetic stirrer | sealed impeller in the bulk | ~1-3 W | no - bypasses the gaps | cheapest forced option |
 | Pump + jet manifold | nozzles along a wall | ~2-5 W | partially | directional; nozzle fouling |
 | **Serpentine plates (guided)** | plates form parallel channels; small pump | **~0.5 W at 5 cm/s** | **yes - every gap** | plates double as fins; needs a manifold |
+| **External pump loop (closed)** | oil out to a pump and straight back - no external HX; the internal water tubes still reject the heat | ~3-30 W (the pipes dominate) | yes - drives the same channels | pump serviceable without opening the pack; oil and water never meet |
 | Full pumped immersion | external HX loop | 20+ W | yes | the AMG HPB80 architecture |
 
 **Safety and practicalities**
@@ -1909,7 +2044,16 @@ def system_tab(d, g, fl, res, masses, loop, chil, Q_duty, C_steady):
     P_hyd_w = wpp["dp"] * mdot_w / loop["rho"]
     P_pump_w = P_hyd_w / pump_eta
     # -- oil circulation --
-    if d.get("plate_on"):
+    ext = d["circ"].startswith("External")
+    xp = None
+    if ext:
+        u_oil = d["u_oil"]
+        xp = ext_loop_pump(d, g, fl, u_oil)
+        P_oil = xp["P"]
+        oil_mode = ("external pump loop"
+                    + (" + serpentine plates" if d.get("plate_on") else
+                       " (row channels)"))
+    elif d.get("plate_on"):
         u_oil = d.get("u_guided", 0.05)
         P_oil = serpentine_pump(d, g, fl, u_oil)["P"]
         oil_mode = "serpentine plates"
@@ -1918,6 +2062,8 @@ def system_tab(d, g, fl, res, masses, loop, chil, Q_duty, C_steady):
         oil_mode = "magnetic stirrer"
     else:
         u_oil = 0.0; P_oil = 0.0; oil_mode = "thermosiphon (passive)"
+    V_pipe_L = (math.pi * d.get("pipe_id", 0.019) ** 2 / 4
+                * d.get("pipe_len", 2.5) * 1000 + 0.3) if ext else 0.0
     # -- internal dielectric->water HX --
     lm = max(hx_dT, 1.0)
     UA_hx = Q_w / lm
@@ -1932,7 +2078,9 @@ def system_tab(d, g, fl, res, masses, loop, chil, Q_duty, C_steady):
     tube_mat = d.get("tube_mat", "Copper")
     tube_L = d["n_tubes"] * g["L_tube"]
     # -- expansion vessel --
-    dV_exp = fl["beta"] * (V_oil_L / 1000.0) * Trange
+    dV_exp = fl["beta"] * ((V_oil_L + (0.0 if not d["circ"].startswith(
+        "External") else math.pi * d.get("pipe_id", 0.019) ** 2 / 4
+        * d.get("pipe_len", 2.5) * 1000 + 0.3)) / 1000.0) * Trange
     V_vessel_L = 1.3 * dV_exp * 1000.0
 
     sc = st.columns(3)
@@ -1947,8 +2095,25 @@ def system_tab(d, g, fl, res, masses, loop, chil, Q_duty, C_steady):
             f"{wpp['Re']:.0f} ({res.get('water_regime','')})\n"
             f"- Class: {'small brushless circulator' if P_pump_w < 30 else 'automotive coolant pump'}")
         st.markdown("**Oil circulation**")
-        st.markdown(f"- Mode: **{oil_mode}**\n"
-                    f"- {('~%.2f W at %.0f mm/s' % (P_oil, u_oil*1000)) if u_oil>0 else 'no pump - buoyancy only'}")
+        if ext and xp:
+            st.markdown(
+                f"- Mode: **{oil_mode}** - closed loop, pump outside "
+                f"the pack, no external HX; oil and water never meet\n"
+                f"- Loop flow **{xp['Vdot_lpm']:.1f} L/min** at "
+                f"{u_oil*100:.0f} cm/s through the pack\n"
+                f"- Δp: pack **{xp['dp_pack']/1000:.2f} kPa** + pipes "
+                f"**{xp['dp_pipe']/1000:.2f} kPa** = "
+                f"**{xp['dp']/1000:.2f} kPa** "
+                f"({xp['dp']/(fl['rho']*9.81):.2f} m head)\n"
+                f"- Pipe velocity {xp['v_pipe']:.2f} m/s "
+                f"({'OK' if xp['v_pipe']<=1.5 else 'high - use a larger bore'}), "
+                f"Re {xp['Re_pipe']:.0f}\n"
+                f"- Motor: **{P_oil:.1f} W electrical** at η=0.35 "
+                f"wire-to-fluid - a "
+                f"{'small sealed BLDC circulator' if P_oil<40 else 'automotive-class oil pump' if P_oil<250 else 'industrial gear/centrifugal pump'}")
+        else:
+            st.markdown(f"- Mode: **{oil_mode}**\n"
+                        f"- {('~%.2f W at %.0f mm/s' % (P_oil, u_oil*1000)) if u_oil>0 else 'no pump - buoyancy only'}")
     with sc[1]:
         st.markdown("**Dielectric→water heat exchanger**")
         st.markdown(
@@ -1965,8 +2130,10 @@ def system_tab(d, g, fl, res, masses, loop, chil, Q_duty, C_steady):
             f"point is acceptable")
     with sc[2]:
         st.markdown("**Coolant (dielectric)**")
+        _vloop = f" (+{V_pipe_L:.1f} L in the external loop)" if ext else ""
         st.markdown(
-            f"- Volume **{V_oil_L:.1f} L**, mass **{m_oil:.1f} kg**\n"
+            f"- Volume **{V_oil_L:.1f} L**{_vloop}, mass "
+            f"**{m_oil:.1f} kg**\n"
             f"- β = {fl['beta']:.1e} /K → expands "
             f"{dV_exp*1000:.2f} L over {Trange:.0f} °C\n"
             f"- Expansion vessel **≈ {V_vessel_L:.2f} L** (bladder)")
@@ -1977,25 +2144,58 @@ def system_tab(d, g, fl, res, masses, loop, chil, Q_duty, C_steady):
             f"- Plates **{m_plates:.1f} kg** aluminium\n"
             f"- Manifold, quick-connects, seals, sensors")
 
+    if ext:
+        st.plotly_chart(_S.schematic_oil_loop(d, g, xp),
+                        width='stretch', key="sy_oilloop")
+        st.caption(
+            "**Impact of taking the pump outside.** Thermally it is the "
+            "same machine - the pump sets the through-pack velocity, and "
+            "that velocity thins the two oil films exactly as stirring or "
+            "guided flow does, so h and the temperatures match the "
+            "equivalent internal option at the same u. What changes is "
+            "practical: the pump is serviceable without opening the "
+            "flooded box (a failed internal stirrer means draining "
+            f"{V_oil_L:.0f} L; a failed external pump is two valves and "
+            "four bolts), the loop self-purges air to the reservoir, and "
+            "speed control is a simple external drive. The price is the "
+            "pipework: it adds Δp (usually more than the pack itself - "
+            "size the bore so the pipe velocity stays near 1 m/s), a "
+            "little coolant volume, two bulkhead penetrations that must "
+            "seal for life, and priming/de-aeration at commissioning.")
+
     # =============================================================== #
     st.markdown("##### 3 · Bill of materials (this build)")
     def gpair(mat_kg, cu, al):
         return cu if mat_kg else al
     rho_cost = cu_kg if tube_mat == "Copper" else al_kg
+    V_cool_tot = V_oil_L + V_pipe_L
     rows = [
-        ("Dielectric ester coolant", f"{V_oil_L:.1f} L", 1,
-         oil_L * V_oil_L, m_oil,
+        ("Dielectric ester coolant", f"{V_cool_tot:.1f} L"
+         + (" (incl. loop)" if ext else ""), 1,
+         oil_L * V_cool_tot, m_oil + V_pipe_L * fl["rho"] / 1000,
          "esters (rapeseed/synthetic); post-PFAS default"),
         (f"{tube_mat} tubes", f"{tube_L:.1f} m × "
          f"{d['tube_od']*1000:.0f} mm", d["n_tubes"],
          rho_cost * m_tubes * fab, m_tubes, "drawn tube, brazed"),
         ("Aluminium cooling plates",
          f"{m_plates:.1f} kg" if m_plates else "none (no serpentine)",
-         (d["n_rows"] - 1) if m_plates else 0,
+         (g["n_rows"] - 1) if m_plates else 0,
          al_kg * m_plates * fab, m_plates,
          "conduction fin + tube carrier"),
         ("Water circulator / pump", f"{P_pump_w:.0f} W, {head_m:.1f} m",
          1, pump_gbp, 0.4, "brushless, sealed"),
+        ("External oil pump", (f"{P_oil:.0f} W, "
+         f"{xp['dp']/1000:.1f} kPa, {xp['Vdot_lpm']:.0f} L/min"
+         if xp else "n/a"), 1 if ext else 0,
+         (pump_gbp * (1.5 + P_oil / 60.0)) if ext else 0.0,
+         0.9 if ext else 0.0,
+         "outside the pack - serviceable without opening it"),
+        ("Oil pipework + bulkheads", (f"{d.get('pipe_len',2.5):.1f} m x "
+         f"{d.get('pipe_id',0.019)*1000:.0f} mm + 2 fittings"
+         if ext else "n/a"), 1 if ext else 0,
+         (7.0 * d.get("pipe_len", 2.5) + 36.0) if ext else 0.0,
+         (0.5 * d.get("pipe_len", 2.5)) if ext else 0.0,
+         "dielectric-rated hose or tube, FKM seals"),
         ("Dielectric→water HX", f"{UA_hx:.0f} W/K, {A_hx:.3f} m²", 1,
          max(60.0, A_hx * 900.0), 0.8 + A_hx * 5, "brazed plate"),
         ("Chiller / dry-cooler", f"{P_chil/1000:.2f} kW el", 1,
@@ -2012,6 +2212,7 @@ def system_tab(d, g, fl, res, masses, loop, chil, Q_duty, C_steady):
         ("Seals, hose, misc.", "FKM/EPDM as compatible", 1, 35.0, 0.5,
          "fluid-compatibility critical"),
     ]
+    rows = [r for r in rows if r[2] > 0]
     bom = _pd.DataFrame(rows, columns=[
         "Item", "Spec / sizing", "Qty", "Cost £", "Mass kg", "Notes"])
     tot_cost = bom["Cost £"].sum(); tot_mass = bom["Mass kg"].sum()
@@ -2574,10 +2775,16 @@ def smoke():
     print(f"export: {len(html)//1000} kB, TOC + tables + scrollspy present")
     print(f"report: {len(secs)} sections, HTML {len(html)//1000} kB")
     # ---- v7 checks: serpentine plates + circuit ----
-    ds = dict(d, plate_on=True, u_oil=0.05, plate_t=0.0015, plate_contact=0.8)
-    rs = solve_steady(ds, g, fl, 1.0, d["T_amb"], C_rate=d["C1"])
-    A_pl, eta_pl, m_pl = plate_fin_area(ds, g, rs["h_tube"])
-    sp = serpentine_pump(ds, g, fl, 0.05)
+    ds = dict(d, plate_on=True, u_oil=0.05, plate_t=0.0015,
+              plate_contact=0.8, n_tubes=max(g["n_rows"] - 1, 1))
+    gs = build_geometry(ds)          # geometry must match the design
+    rs = solve_steady(ds, gs, fl, 1.0, d["T_amb"], C_rate=d["C1"])
+    A_pl, eta_pl, m_pl = plate_fin_area(ds, gs, rs["h_tube"])
+    # served-fraction coupling: halving the tubes must halve plate area
+    A_half, _, _ = plate_fin_area(
+        dict(ds, n_tubes=max((g["n_rows"] - 1) // 2, 1)), gs, rs["h_tube"])
+    assert abs(A_half / A_pl - 0.5) < 0.03, "plate served-fraction"
+    sp = serpentine_pump(ds, gs, fl, 0.05)
     dTp = sp["dT_est"](rs["Q_eff"])
     print(f"serpentine: T_b {res['T_b']:.1f} -> {rs['T_b']:.1f} °C  "
           f"plates +{A_pl:.1f} m² (eta {eta_pl:.2f}, {m_pl:.1f} kg)  "
@@ -2585,6 +2792,22 @@ def smoke():
           f"spread {res['spread']:.1f} -> {rs['spread']:.1f} °C")
     assert rs["T_b"] < res["T_b"] - 2.5 and sp["P"] < 5.0 and A_pl > 0.7
     assert dTp < 6.0, "parallel channels should carry the heat"
+    # ---- v10 checks: tube shapes + external pump loop ----
+    for shp, kw in [("Square", dict(tube_w=0.010)),
+                    ("Rectangular", dict(tube_w=0.012, tube_h=0.008))]:
+        dq = dict(d, tube_shape=shp, **kw)
+        gq = build_geometry(dq)
+        rq = solve_steady(dq, gq, fl, 1.0, d["T_amb"], C_rate=d["C1"])
+        assert gq["tube_sec"]["shape"] == shp and rq["T_b"] < 60
+        assert gq["tube_sec"]["fRe"] < 64.0 and             gq["tube_sec"]["lam_nu"] < 3.66
+    dx = dict(ds, circ="External pump loop (closed)", pipe_id=0.019,
+              pipe_len=2.5)
+    xp1 = ext_loop_pump(dx, gs, fl, 0.05)
+    xp2 = ext_loop_pump(dict(dx, pipe_id=0.032), gs, fl, 0.05)
+    assert 0 < xp1["P"] < 200 and xp2["P"] < xp1["P"],         "bigger bore must cut the ext-pump power"
+    assert xp1["dp_pipe"] > xp1["dp_pack"],         "at 19 mm the pipes should dominate the pack channels"
+    print(f"tube shapes: square/rect solve; ext loop 19mm {xp1['P']:.1f} W"
+          f" -> 32mm {xp2['P']:.1f} W ({xp1['Vdot_lpm']:.0f} L/min)")
     fc = thermal_circuit_fig(d, g, fl, res, res["Q_eff"])
     assert len(fc.layout.shapes) >= 6
     nu_T_fig(fl)
@@ -3234,18 +3457,45 @@ def design_inputs(cool_df) -> dict:
         d["circ"] = _w(st.selectbox, "Circulation method", "circ",
                        "Thermosiphon only",
                        options=["Thermosiphon only", "Open stirring",
-                                "Serpentine plates (guided)"],
-                       help="Realistic options are compared in Learn and Ideas.")
+                                "Serpentine plates (guided)",
+                                "External pump loop (closed)"],
+                       help="Realistic options are compared in Learn and "
+                            "Ideas. The external pump keeps the dielectric "
+                            "in a closed loop through an outside pump - no "
+                            "external heat exchanger; the internal water "
+                            "tubes still remove the heat, so oil and water "
+                            "never meet.")
         d["u_oil"] = 0.0
         d["plate_on"] = False
+        _ext = d["circ"].startswith("External")
         if d["circ"] == "Open stirring":
             d["u_oil"] = _w(st.slider, "Stirring velocity [m/s]", "uoil", 0.0,
                             min_value=0.0, max_value=0.20, step=0.005)
+        if _ext:
+            d["u_loop"] = _w(st.slider, "Loop velocity through the pack "
+                             "[m/s]", "ulp", 0.05, min_value=0.0,
+                             max_value=0.20, step=0.005,
+                             help="Set by the external pump's operating "
+                                  "point; drives both oil films exactly "
+                                  "like stirring/guided flow.")
+            d["u_oil"] = d["u_loop"]
+            d["pipe_id"] = _w(st.slider, "External pipe bore [mm]", "pid",
+                              19.0, min_value=6.0, max_value=50.0,
+                              step=1.0) / 1000
+            d["pipe_len"] = _w(st.slider, "External pipe length, out and "
+                               "back [m]", "plen", 2.5, min_value=0.5,
+                               max_value=8.0, step=0.25)
+            d["plate_on"] = _w(st.checkbox, "Guide the flow with serpentine "
+                               "plates", "extpl", True,
+                               help="Plates form the parallel channels the "
+                                    "pump feeds AND act as fins bonded to "
+                                    "the water tubes.")
         if d["circ"] == "Serpentine plates (guided)":
             d["plate_on"] = True
             d["u_guided"] = _w(st.slider, "Guided channel velocity [m/s]", "ugd",
                                0.05, min_value=0.0, max_value=0.15, step=0.005)
             d["u_oil"] = d["u_guided"]
+        if d["plate_on"]:
             d["plate_t"] = _w(st.select_slider, "Plate thickness [mm]", "plt", 1.5,
                               options=[1.0, 1.5, 2.0]) / 1000
             d["plate_mat"] = _w(st.selectbox, "Plate material", "plm", "Aluminium",
@@ -3253,7 +3503,10 @@ def design_inputs(cool_df) -> dict:
             d["plate_contact"] = _w(st.slider, "Plate-to-tube contact factor",
                                     "plc", 0.8, min_value=0.4, max_value=1.0,
                                     step=0.05,
-                                    help="Brazed ~0.9, clamped ~0.6")
+                                    help="Brazed round tube ~0.9, clamped "
+                                         "~0.6; a flat-faced square or "
+                                         "rectangular tube bonds better "
+                                         "(~0.95).")
         with st.expander("Holders"):
             d["m_holder_g"] = _w(st.slider, "Holder mass [g/cell]", "mhold", 8.0, min_value=0.0, max_value=25.0, step=1.0)
             d["holder_block"] = _w(st.slider, "Gap-flow blockage", "hblk", 0.20, min_value=0.0, max_value=0.6, step=0.05)
@@ -3261,14 +3514,64 @@ def design_inputs(cool_df) -> dict:
             f"{ss.get('w_flow',10.0):.0f} L/min at {ss.get('w_twin',20.0):.0f}°C")
     with c3, st.expander(t_hx, expanded=False):
         d["n_tubes"] = _w(st.slider, "Tubes", "ntub", 16, min_value=1, max_value=60)
-        d["tube_od"] = _w(st.slider, "Tube OD [mm]", "tod", 10.0, min_value=4.0, max_value=25.0, step=0.5) / 1000
+        _npl_hint = max(ss.get("w_Ns", 108) * ss.get("w_Np", 10), 1)
+        d["tube_shape"] = _w(st.selectbox, "Tube cross-section", "tshape",
+                             "Round",
+                             options=["Round", "Square", "Rectangular"],
+                             help="Square/rectangular tubes present a "
+                                  "flat face to the serpentine plates - a "
+                                  "far better bond than a round tube's "
+                                  "line contact - and more wetted "
+                                  "perimeter per tube. The solver uses "
+                                  "the proper duct physics (Shah-London "
+                                  "laminar Nu and f-Re by aspect ratio, "
+                                  "Gnielinski on the hydraulic diameter).")
+        if d["tube_shape"] == "Round":
+            d["tube_od"] = _w(st.slider, "Tube OD [mm]", "tod", 10.0, min_value=4.0, max_value=25.0, step=0.5) / 1000
+        elif d["tube_shape"] == "Square":
+            d["tube_w"] = _w(st.slider, "Tube side [mm]", "tw", 10.0,
+                             min_value=4.0, max_value=25.0, step=0.5) / 1000
+            d["tube_od"] = d["tube_w"]
+        else:
+            d["tube_w"] = _w(st.slider, "Tube width (into plate) [mm]",
+                             "tw", 12.0, min_value=4.0, max_value=30.0,
+                             step=0.5) / 1000
+            d["tube_h"] = _w(st.slider, "Tube height (along plate) [mm]",
+                             "th", 8.0, min_value=4.0, max_value=30.0,
+                             step=0.5) / 1000
+            d["tube_od"] = max(d["tube_w"], d["tube_h"])
         d["tube_wall"] = _w(st.slider, "Wall [mm]", "twall", 1.0, min_value=0.5, max_value=3.0, step=0.25) / 1000
         d["tube_mat"] = _w(st.selectbox, "Tube material", "tmat", "Copper", options=list(K_TUBE))
+        if ss.get("w_circ", "").startswith(("Serpentine", "External")) or \
+           ss.get("w_extpl", False):
+            _ncol = math.ceil(math.sqrt(_npl_hint))
+            _npl = max(math.ceil(_npl_hint / _ncol) - 1, 1)
+            _sug = sorted({_npl} | {_npl // k for k in (2, 3, 4)
+                                    if _npl // k >= 1}, reverse=True)
+            _nt_now = ss.get("w_ntub", 16)
+            if _nt_now < _npl:
+                st.caption(f"With ~{_npl} plate gaps, {_nt_now} tubes "
+                           f"leaves {_npl - _nt_now} plates without a "
+                           f"bonded tube - those act only as passive "
+                           f"spreaders and the model derates the plate "
+                           f"area to {100*min(1,_nt_now/_npl):.0f}%. "
+                           f"Symmetric counts: "
+                           f"{', '.join(str(s) for s in _sug)}.")
+            elif _nt_now > _npl:
+                st.caption(f"More tubes ({_nt_now}) than plate gaps "
+                           f"(~{_npl}); the extras act as bare tubes in "
+                           f"the tube zone. One per plate ({_npl}) is "
+                           f"the natural count.")
         d["passes"] = _w(st.slider, "Passes", "pass", 1, min_value=1, max_value=4)
         d["tube_plane"] = _w(st.selectbox, "Tube plane", "tplane", "Top of pack",
                              options=["Top of pack", "Interstitial (between rows)",
                                       "Mid-height", "Below the cells"])
-        d["fins_on"] = _w(st.checkbox, "Annular fins", "fins", True)
+        if d["tube_shape"] == "Round":
+            d["fins_on"] = _w(st.checkbox, "Annular fins", "fins", True)
+        else:
+            d["fins_on"] = False
+            st.caption("Annular fins fit round tubes only; flat-sided "
+                       "tubes rely on the plates for extended area.")
         if d["fins_on"]:
             d["fin_h"] = _w(st.slider, "Fin height [mm]", "finh", 8.0, min_value=2.0, max_value=20.0, step=0.5) / 1000
             d["fin_t"] = _w(st.slider, "Fin thickness [mm]", "fint", 0.5, min_value=0.2, max_value=1.5, step=0.1) / 1000
@@ -3413,7 +3716,11 @@ def main():
     T_gov = res["T_core"] if d["limit_core"] else res["T_b"]
     ok = T_gov <= d["T_limit"]
     P_pump = water_pump_power(d, g, loop)["P"]
-    if d.get("plate_on"):
+    if d["circ"].startswith("External"):
+        _xp = ext_loop_pump(d, g, fl, d["u_oil"])
+        P_stir = _xp["P"]
+        res["ext"] = _xp
+    elif d.get("plate_on"):
         _sp = serpentine_pump(d, g, fl, d["u_oil"])
         P_stir = _sp["P"]
     else:
@@ -3800,7 +4107,14 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                         loop_fluid=d["loop_fluid"],
                         tube_od=d["tube_od"], tube_wall=d["tube_wall"],
                         tube_mat=d["tube_mat"], fins_on=d["fins_on"],
-                        circ0=("serpentine" if d.get("plate_on") else
+                        tshape=d.get("tube_shape", "Round").lower()[:5]
+                        .replace("recta", "rect"),
+                        tw=d.get("tube_w", 0.012),
+                        th=d.get("tube_h", 0.008),
+                        pipe_id=d.get("pipe_id", 0.019),
+                        pipe_len=d.get("pipe_len", 2.5),
+                        circ0=("extpump" if d["circ"].startswith("External")
+                               else "serpentine" if d.get("plate_on") else
                                "stirred" if d["u_oil"] > 0 else
                                "thermosiphon"),
                         u0=(d.get("u_guided", 0.05) if d.get("plate_on")
@@ -3915,7 +4229,9 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                                "tplane": "w_tplane", "tod": "w_tod",
                                "twall": "w_twall", "tmat": "w_tmat",
                                "loop": "w_loopf", "tlim": "w_tlim",
-                               "limc": "w_limcore", "hext": "w_hext"}
+                               "limc": "w_limcore", "hext": "w_hext",
+                               "tw": "w_tw", "th": "w_th",
+                               "pipeD": "w_pid", "pipeL": "w_plen"}
                     ints = {"ntub", "ns", "np"}
                     for k_, wk in mapping.items():
                         if k_ in j:
@@ -3924,11 +4240,20 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                     circ_map = {"thermosiphon": "Thermosiphon only",
                                 "stirred": "Open stirring",
                                 "serpentine":
-                                "Serpentine plates (guided)"}
+                                "Serpentine plates (guided)",
+                                "extpump":
+                                "External pump loop (closed)"}
+                    if "tshape" in j:
+                        pen["w_tshape"] = {"round": "Round",
+                                           "squar": "Square",
+                                           "rect": "Rectangular"}.get(
+                            j["tshape"], "Round")
                     if "circ" in j:
                         pen["w_circ"] = circ_map.get(j["circ"],
                                                      "Thermosiphon only")
-                        if j["circ"] == "serpentine" and "u" in j:
+                        if j["circ"] == "extpump" and "u" in j:
+                            pen["w_ulp"] = float(j["u"])
+                        elif j["circ"] == "serpentine" and "u" in j:
                             pen["w_ugd"] = float(j["u"])
                         elif j["circ"] == "stirred" and "u" in j:
                             pen["w_uoil"] = float(j["u"])
@@ -4838,11 +5163,50 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                    Q_duty, C_steady)
 
     with tabs[12]:
-        cbt, _ = st.columns([1, 3])
+        cbt, cbo, _ = st.columns([1, 1.4, 1.6])
         cbt.download_button("Download this report (.html)",
                             data=export_report_html(secs, figs_r, meta_r),
                             file_name="pack_design_report.html",
                             mime="text/html", use_container_width=True)
+        with cbo.popover("Export as Word / PowerPoint / PDF",
+                         use_container_width=True):
+            st.caption("Builds the full report - every section, table "
+                       "and figure - as real files. Figures need the "
+                       "kaleido package (in requirements.txt).")
+            inc_figs = st.checkbox("Include figures", True,
+                                   key="rx_figs")
+            if st.button("Build the three files", key="rx_build",
+                         use_container_width=True):
+                import report_export as _RX
+                with st.spinner("Rendering figures and laying out "
+                                "documents..."):
+                    _pngs = _RX.figs_to_png(figs_r) if inc_figs else {}
+                    if inc_figs and not _pngs:
+                        st.info("kaleido not available - exporting "
+                                "text-only.")
+                    st.session_state["rx_files"] = dict(
+                        docx=_RX.build_docx(secs, meta_r, _pngs),
+                        pptx=_RX.build_pptx(secs, meta_r, _pngs),
+                        pdf=_RX.build_pdf(secs, meta_r, _pngs))
+            if "rx_files" in st.session_state:
+                _fx = st.session_state["rx_files"]
+                st.download_button(
+                    "Word report (.docx)", data=_fx["docx"],
+                    file_name="pack_design_report.docx",
+                    mime="application/vnd.openxmlformats-officedocument"
+                         ".wordprocessingml.document",
+                    use_container_width=True, key="rx_dl_docx")
+                st.download_button(
+                    "PowerPoint deck (.pptx)", data=_fx["pptx"],
+                    file_name="pack_design_report.pptx",
+                    mime="application/vnd.openxmlformats-officedocument"
+                         ".presentationml.presentation",
+                    use_container_width=True, key="rx_dl_pptx")
+                st.download_button(
+                    "PDF report (.pdf)", data=_fx["pdf"],
+                    file_name="pack_design_report.pdf",
+                    mime="application/pdf",
+                    use_container_width=True, key="rx_dl_pdf")
         render_report_tab(secs, figs_r, meta_r)
 
     # ---------------- Validate and tune ---------------- #
