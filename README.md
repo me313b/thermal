@@ -499,3 +499,40 @@ displayed so the can-vs-core specification decision cannot hide. The
 remaining uncertainty is measurement, not modelling: the one-tube,
 two-crossing oil-bath rig point pins h_c and the wetted-tube film and
 settles whether the core clears 45 C.
+
+## v9.6 Learn tab rebuilt: equations woven into the physics, and it moves
+The Learn tab was rebuilt from a stack of collapsed panels (equation in
+one place, prose in another) into a single flowing narrative where every
+equation sits inside the sentence that explains it, using inline LaTeX.
+The through-line is that the heat-transfer coefficient h is a *calculated
+result*, not a fixed property: the tab derives h = Nu.k/L from the
+boundary-film picture (h = k/delta), shows Ra -> Nu -> h with Churchill-
+Chu, and drives the whole chain from live sliders (length L, temperature
+difference, and fluid) so the reader watches each number flow through the
+equations to the h their surface actually gets - including that a taller
+surface has a *lower* h (h ~ L^-1/4).
+
+New interactive pieces:
+- An animated in-browser boundary-layer explorer (HTML/JS canvas): warm
+  oil rises past a hot cell wall, the no-slip film sets the temperature
+  drop, and a flow slider thins the film and updates h = k/delta live.
+- A slider-driven film-temperature profile that shows h = k/delta as a
+  graph.
+- The h-calculator: length/dT/fluid sliders that print Ra, Nu and h as
+  fully substituted equations, plus an h-versus-length curve.
+- A stirring slider that redraws the whole core-to-water temperature
+  stack, showing the two oil films shrink as the flow thins them.
+The design levers (viscosity, gap, stirring, fins), the water-side
+laminar plateau, the DCIR feedback and core resistance, and the thermal-
+flywheel buffering are all retained but reworked to flow with their
+equations inline; reference material (moving the oil, safety, the AMG
+benchmark, sources) sits in one expander at the end.
+
+Also in v9.6: the three v9.5 sign-off nits are closed - the Monte Carlo
+core-exceedance warning no longer hardcodes a false "the can clears"
+clause when h_c is low (it now reports the real can count), the
+h_face_design docstring says "tube pitch" explicitly, the shakedown's
+core-crossing figure is harmonised with the live app, and the response
+memos' last stale numbers are corrected. A separate pre-existing render
+bug (currency dollar signs in the Report tab parsed as LaTeX math) is
+fixed by using USD wording.

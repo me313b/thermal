@@ -36,7 +36,7 @@ recirculating loop the net head is `rho.beta.g.H.(T_riser - T_downcomer)`
 and the downcomer sits at `T_plen`, so at the default the per-pass rise is
 tiny and the net head collapses to ≲0.1 Pa. **Verify:** the shakedown
 prints `net head 0.00 Pa of 25 Pa pump (was ~9 Pa)`; ū falls from 166 to
-124 mm/s and T_max rises +0.4-1.1 °C (with F4). Your dp = 3 Pa case now
+124 mm/s and T_max rises +1.15 °C (F1 and F4 combined). Your dp = 3 Pa case now
 correctly exceeds the limit rather than hiding behind phantom head.
 
 ### F5 — No laminar-turbulent water bridge [FIXED]

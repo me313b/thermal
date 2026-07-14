@@ -87,11 +87,12 @@ def h_face_design(d, bank):
     Note (verification obs 4): this reads a11 from whatever bank the
     caller built, so the value drifts a few percent with the kernel grid
     resolution (n): ~255 at n=100, ~278 at a coarse mini-bank. The
-    layout snap has margin here - the 43 mm / every-2-cells snap holds
-    for h_face up to ~ 2 k_p t_p / (pitch)^2, i.e. it does not flip
-    until h_face exceeds a threshold well above these values - but the
-    shakedown asserts the resulting tube count so a future bank change
-    that moves the snap boundary is caught rather than silent."""
+    layout snap has margin here - the every-2-cells (43 mm) snap holds
+    until h_face exceeds ~ 2 k_p t_p / P^2, where P is the TUBE pitch
+    (n_per * cell_pitch = 43 mm), i.e. ~333 W/m2K, well above these
+    values - but the shakedown asserts the resulting tube count so a
+    future bank change that moves the snap boundary is caught rather
+    than silent."""
     rho, cp, k_o = d["rho"], d["cp"], d["k_oil"]
     H = d["h_cell"]
     Dh, A, fRe = bank.props(d["s_nom"])
@@ -521,7 +522,8 @@ if __name__ == "__main__":
         print(f"  h_c {hc:6d} W/m2K -> can {rc['T_max']:.2f}"
               f"  core {rc['T_core_max']:.2f}{flag}")
     print("  (the can clears 45 down to ~2900 W/m2K, but the CORE only "
-          "clears above ~7500 - within ~7% of the nominal 8000)")
+          "clears above ~7600 - close to the nominal 8000, within a "
+          "few %)")
 
     # optional oil->tube bypass (F3)
     rb = solve_zonal(dict(d, wetted_tube_frac=0.5), bank, nz=10, iters=200)

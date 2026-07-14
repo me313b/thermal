@@ -44,10 +44,13 @@ node-specific numbers.
 tab shows it beside the can-based one. When the core clears (0/M) it reads
 as a green confirmation with the rule-of-three upper bound; when the core
 exceeds - which it does on the default_d design point (worst core sample
-45.03 °C, and a meaningful fraction of samples land at 45.0-45.03 because
-the hottest-core cell preferentially sits where the contact ran low - it
-reads as a warning that states the rule of three no longer applies on that
-node and the design is at the limit as drawn. The can-based metric is
+45.03 °C, and ~29% of samples over 45) - it reads as a warning that states
+the rule of three no longer applies on that node and the design is at the
+limit as drawn. The mechanism is simply that the deterministic core sits
+0.07 °C below the limit and the sample scatter is +/-0.03 °C, so about a
+third of the distribution pokes over; whether a given sample exceeds is
+driven by its pack-mean contact draw, not by where the single lowest-
+contact joint happens to land. The can-based metric is
 unchanged (0/M). So the tab now makes Obs 2 visible in the Monte Carlo,
 exactly as you suggested.
 

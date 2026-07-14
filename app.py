@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v9.5"
+APP_VERSION = "v9.6"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -1154,206 +1154,675 @@ def coolant_tab(d, g, cool_df):
                    "source spreadsheet apply.")
 
 
-def learn_tab(d, g, fl, res, masses, cool_df, loop):
-    if True:
-        st.markdown("Work top to bottom: each panel is one physical idea, using **your live "
-                    "design** for the numbers.")
-        with st.expander("1. The whole story: two thin films own the problem", expanded=True):
-            st.markdown(
-                "Once heat is in the moving oil, buoyancy mixes it well; the bulk is nearly "
-                "isothermal. All the temperature drop concentrates in two near-stagnant "
-                "**boundary layers**: one on the cell wall, one on the tube wall. Across a "
-                "film the only transport is conduction through oil, so")
-            st.latex(r"h \approx \frac{k_{oil}}{\delta_{film}} \quad\Rightarrow\quad "
-                     r"h \sim \frac{0.13\ \mathrm{W/mK}}{1\text{-}2\ \mathrm{mm}} "
-                     r"\approx 60\text{-}130\ \mathrm{W/m^2K}")
-            st.markdown(
-                f"Right now your films give **h_cell = {res['h_cell']:.0f}** and "
-                f"**h_tube = {res['h_tube']:.0f} W/m²·K**. Compare: 1.5 mm of stagnant oil has "
-                "about **4000x** the resistance of 1 mm of copper wall. Both R = 1/(hA), so "
-                "the fixes are exactly two: raise h (thin the film: stir, lower viscosity) or "
-                "raise A (fins, more tubes).")
-        with st.expander("2. Natural convection playground: Ra -> Nu -> h"):
-            st.latex(r"Ra_L=\frac{g\,\beta\,\Delta T\,L^3}{\nu\,\alpha},\qquad "
-                     r"Nu=\Big(0.825+\frac{0.387\,Ra^{1/6}}{[1+(0.492/Pr)^{9/16}]^{8/27}}\Big)^2,"
-                     r"\qquad h=\frac{Nu\,k}{L}")
-            cA2, cB2 = st.columns(2)
-            dT_p = cA2.slider("Surface-to-bulk dT [K]", 1.0, 30.0, 8.0, 0.5)
-            L_p = cB2.slider("Characteristic length [mm]", 10.0, 200.0, d["h_cell"] * 1000, 5.0) / 1000
-            pf = film_props(fl, 35.0)
-            Ra_p = rayleigh(pf, dT_p, L_p)
-            h_p = nu_vertical_cc(Ra_p, pf["Pr"]) * pf["k"] / L_p
-            st.markdown(f"**{fl['name']}**: Ra = {Ra_p:.2e} (laminar below ~1e9), Pr = "
-                        f"{pf['Pr']:.0f}, **h = {h_p:.0f} W/m²·K**, and one 21700 sheds "
-                        f"**{h_p * math.pi * 0.021 * 0.07 * dT_p:.1f} W** at that dT. Note "
-                        "h ~ dT^(1/4): you cannot rescue a hot pack by letting it run hotter, "
-                        "and h ~ (1/nu)^(1/4) via Ra, which is panel 3.")
-        with st.expander("3. Why low viscosity beats high conductivity"):
-            xs, ys, names, ks = [], [], [], []
-            for _, r in cool_df.iterrows():
-                f3 = fluid_dict(r)
-                p3 = film_props(f3, 35.0)
-                Ra3 = rayleigh(p3, 8.0, d["h_cell"])
-                ys.append(nu_vertical_cc(Ra3, p3["Pr"]) * p3["k"] / d["h_cell"])
-                xs.append(r["nu_cSt"]); names.append(r["name"]); ks.append(r["k"])
-            figV = go.Figure(go.Scatter(
-                x=xs, y=ys, mode="markers+text",
-                text=thin_labels(xs, ys, names, logx=True),
-                hovertext=names, hoverinfo="text+x+y",
-                textposition="top center", textfont=dict(size=11),
-                marker=dict(size=8 + 60 * np.array(ks) / max(ks),
-                            color=ks, colorscale="YlOrBr",
-                            colorbar=dict(title="k [W/mK]"))))
-            figV.update_layout(height=430, xaxis_type="log",
-                               xaxis_title="Kinematic viscosity at 25 °C [cSt] (log)",
-                               yaxis_title="Natural-convection h on a 21700 [W/m²·K]",
-                               title="Ra ~ 1/nu, h ~ Ra^(1/4-1/6): viscosity is the strong "
-                                     "axis (hover for every fluid)",
-                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(figV, use_container_width=True)
-            st.caption("This reproduces Wang et al.'s HFE7100 result: 1% of the viscosity "
-                       "beat 5x lower conductivity. But the whole y-axis spans barely a "
-                       "factor of 3: fluid choice cannot buy fast charge. Geometry and "
-                       "stirring can.")
-        with st.expander("4. The cell-gap cliff (Wang Fig. 9)"):
-            st.latex(r"u_\mathrm{gap}\sim\dfrac{g\,\beta\,\Delta T\,\delta^{2}}{\nu}\;\Rightarrow\;u_\mathrm{gap}\propto\delta^{2}\quad(\text{halve the gap, quarter the flow})")
-            gaps = np.linspace(0.5, 10, 60)
-            figG = go.Figure(go.Scatter(x=gaps, y=[gap_factor(x) for x in gaps],
-                                        line=dict(color=ACCENT, width=3)))
-            figG.add_vline(x=g["gap_mm"], line_dash="dash",
-                           annotation_text=f"your gap {g['gap_mm']:.1f} mm")
-            figG.update_layout(height=300, xaxis_title="Cell-to-cell gap [mm]",
-                               yaxis_title="h penalty factor",
-                               title="Below ~6 mm the buoyant flow in the gaps is throttled",
-                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(figG, use_container_width=True)
-            st.caption("Wang et al. measured gap velocity falling 1.8 -> 0.5 mm/s as spacing "
-                       "shrank 8 -> 2 mm; temperature climbed steeply below 6 mm. This is the "
-                       "energy-density tax of static immersion: cold-plate packs run 1-2 mm "
-                       "pitch. The penalty applies to the buoyant component only, so stirring "
-                       "largely removes the cliff.")
-        with st.expander("5. Fins: buying area where h is worst"):
-            st.latex(r"m=\sqrt{\dfrac{2h}{k\,t}},\qquad \eta_\mathrm{fin}=\dfrac{\tanh(mL)}{mL},\qquad A_\mathrm{eff}=A_\mathrm{base}+\eta_\mathrm{fin}A_\mathrm{fin}")
-            hs = np.linspace(0.002, 0.02, 40)
-            eff, gain = [], []
-            for hh in hs:
-                fp = fin_pack(d["tube_od"], hh, d["fin_t"] if d["fins_on"] else 0.0005,
-                              d["fin_p"] if d["fins_on"] else 0.004,
-                              205.0, max(res["h_tube"], 30))
-                eff.append(fp["eta"]); gain.append(fp["area_gain"])
-            figF = go.Figure()
-            figF.add_trace(go.Scatter(x=hs * 1000, y=gain, name="Area gain x",
-                                      line=dict(color=INK, width=3)))
-            figF.add_trace(go.Scatter(x=hs * 1000, y=eff, name="Fin efficiency",
-                                      yaxis="y2", line=dict(color=ACCENT, width=3)))
-            figF.update_layout(height=320, xaxis_title="Fin height [mm]",
-                               yaxis_title="Effective area multiplier",
-                               yaxis2=dict(title="Schmidt efficiency", overlaying="y",
-                                           side="right", range=[0, 1.05]),
-                               title="Oil's low h keeps even long thin fins ~90% efficient: "
-                                     "fin hard",
-                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",)
-            st.plotly_chart(figF, use_container_width=True)
-        with st.expander("6. Stirring and the thermosiphon floor"):
-            st.latex(r"\underbrace{\rho\,\beta\,g\,H\,\Delta T}_{\text{buoyant head}}=\underbrace{\left(K+f\tfrac{L}{D_h}\right)\tfrac{1}{2}\rho\,u^{2}}_{\text{loop loss}}\;\Rightarrow\;u_\mathrm{ts}")
-            us = np.linspace(0, 0.2, 50)
-            hcs, hts = [], []
-            for u in us:
-                ue = max(u, res["u_ts"])
-                hcs.append(h_cell_side(fl, res["T_b"], res["T_il"], d["h_cell"], d["d_cell"],
-                                       g["gap_mm"], ue)["h"] * d["cal_h"])
-                hts.append(h_tube_side(fl, res["T_il"], res["T_wall"], d["tube_od"], ue)["h"]
-                           * d["cal_h"])
-            figU = go.Figure()
-            figU.add_trace(go.Scatter(x=us * 100, y=hcs, name="Cell film",
-                                      line=dict(color="#EF4444", width=3)))
-            figU.add_trace(go.Scatter(x=us * 100, y=hts, name="Tube film",
-                                      line=dict(color="#6366F1", width=3)))
-            figU.add_vline(x=d["u_oil"] * 100, line_dash="dash", annotation_text="your stirring")
-            figU.add_vline(x=res["u_ts"] * 100, line_dash="dot", line_color="#10B981",
-                           annotation_text=f"thermosiphon {res['u_ts']*1000:.1f} mm/s")
-            figU.update_layout(height=320, xaxis_title="Oil velocity [cm/s]",
-                               yaxis_title="h [W/m²·K]",
-                               title="The pack stirs itself a little; a circulator does it "
-                                     "properly",
-                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",)
-            st.plotly_chart(figU, use_container_width=True)
-            st.caption(f"Predicted self-circulation: buoyant head rho*beta*g*H*dT against "
-                       f"laminar loop friction; here {res['u_ts']*1000:.1f} mm/s and "
-                       f"{res['dT_loop']:.1f} °C top-to-bottom (Wang measured 0.5-1.8 mm/s). "
-                       "Tube placement sets the head: put the cold plane high. A few cm/s of "
-                       f"forced stirring ({stirrer_power(d, g, fl, 0.05):.1f} W at 5 cm/s) "
-                       "dwarfs it.")
-        with st.expander("7. Inside the tubes: the laminar plateau"):
-            st.latex(r"Re=\dfrac{4\dot m}{\pi\mu d_i},\qquad Nu_\mathrm{lam}\!\to\!\text{const}\;(3.66\text{–}4.36),\qquad Nu_\mathrm{turb}=\dfrac{(f/8)(Re-1000)Pr}{1+12.7\sqrt{f/8}\,(Pr^{2/3}-1)}")
-            fls = np.linspace(0.5, 60, 80)
-            hws, res_w = [], []
-            for q in fls:
-                md = q / 60 * loop["rho"] / 1000 / max(d["n_tubes"], 1)
-                w = h_water_inside(loop, md, g["d_i"], g["L_tube"])
-                hws.append(w["h"]); res_w.append(w["Re"])
-            figW = go.Figure(go.Scatter(x=fls, y=hws, line=dict(color="#0EA5E9", width=3)))
-            figW.add_vline(x=d["flow_lpm"], line_dash="dash", annotation_text="your flow")
-            i2300 = int(np.argmin(np.abs(np.array(res_w) - 2300)))
-            figW.add_vline(x=fls[i2300], line_dash="dot", line_color="#B91C1C",
-                           annotation_text="Re 2300")
-            figW.update_layout(height=320, xaxis_title="Total water flow [L/min]",
-                               yaxis_title="h inside tube [W/m²·K]",
-                               title="In laminar flow Nu is ~constant: pumping harder does "
-                                     "nothing until you trip turbulence",
-                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(figW, use_container_width=True)
-        with st.expander("8. Buffering: the oil is a thermal flywheel"):
-            st.latex(r"C=\sum_i m_i c_{p,i},\qquad \tau=\dfrac{C\,\Delta T_\mathrm{allow}}{Q_\mathrm{excess}}")
-            cQ, cT = st.columns(2)
-            Q_ex = cQ.slider("Excess heat beyond removal [kW]", 0.1, 15.0, 3.0, 0.1)
-            dT_h = cT.slider("Allowed temperature drift [K]", 2.0, 25.0, 10.0, 1.0)
-            Ctot = masses["C_oil"] + masses["C_batt"]
-            st.markdown(f"Thermal mass = oil {masses['C_oil']/1000:.0f} kJ/K + cells "
-                        f"{masses['C_batt']/1000:.0f} kJ/K = **{Ctot/1000:.0f} kJ/K**. "
-                        f"It absorbs {Q_ex:.1f} kW of excess for "
-                        f"**{Ctot*dT_h/(Q_ex*1000)/60:.1f} minutes** per {dT_h:.0f} °C of "
-                        "drift. Size the steady HX for continuous duty and let the flywheel "
-                        "eat the peaks.")
-        with st.expander("9. Heat that fights back: DCIR(T) and the core"):
-            st.latex(r"R_{dc}(T)=R_{25}\,e^{-k_{dc}(T-25)},\qquad R_\mathrm{core}=\dfrac{1}{4\pi k_r H}\;\;(\text{jellyroll spreading, coolant-independent})")
-            Ts = np.linspace(0, 60, 61)
-            figD = go.Figure(go.Scatter(x=Ts, y=[r_of_T(d, t) for t in Ts],
-                                        line=dict(color=INK, width=3)))
-            figD.add_vline(x=res["T_b"], line_dash="dash", annotation_text="your cell")
-            figD.update_layout(height=300, xaxis_title="Cell temperature [°C]",
-                               yaxis_title="DCIR [mΩ]",
-                               title=f"R(T) = R25 exp(-{d['k_dcir']*100:.1f}%/K x (T-25))",
-                               plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(figD, use_container_width=True)
-            st.markdown(f"Running at {res['T_b']:.0f} °C instead of 25 cuts heat generation "
-                        f"by **{100*(1-r_of_T(d, res['T_b'])/d['r_dc']):.0f}%** at the same "
-                        "current - the AMG 45 °C set-point logic, and why the transient "
-                        "self-stabilises near the limit. Separately, the core runs "
-                        f"**{res['dT_core']:.1f} °C** above the can here "
-                        f"(R_core = 1/(4 pi k_r H) = {r_core(d):.2f} K/W): no coolant choice "
-                        "touches that term.")
-        with st.expander("10. Safety, practicalities, and the production reference"):
-            st.markdown(f"""
-* **Water-in-oil leak** is the single-point failure: hold **oil pressure above water
-  pressure** so leaks go oil-to-water, or double-walled tubes with leak detection
-  (transformer practice).
-* **Expansion**: beta = {fl['beta']:.1e} /K on {masses['V_oil_L']:.0f} L means
-  ~{fl['beta']*masses['V_oil_L']*70:.1f} L over a -10 to 60 °C band. Bellows or bladder,
-  not free air.
-* **Materials**: seal/insulation compatibility, ester moisture uptake, copper oxidation
-  catalysis (use inhibited fluids or plated tubes).
-* **Venting**: a cell venting into a sealed flooded box is a pressure spike - see the
-  runaway screening in Decide. The flip side: oxygen exclusion and the oil's heat
-  absorption suppress propagation.
-* **Fluid supply**: 3M exited PFAS manufacture end-2025; anchor the programme on esters.
-* **Mercedes AMG HPB80** (batterydesign.net): 560 x 21700, 112S5P, 6.1 kWh, 89 kg,
-  68.5 Wh/kg, 150 kW peak / 70 kW continuous, pumped dielectric (14 L) through an external
-  dielectric-to-water HX, 10 kW cooling, 45 °C set point.
-* **Sources**: Wang et al. 2023 (J. Energy Storage 62, 106821); Zou et al. 2024 (J. Energy
-  Storage 83, 110634); Roe et al. 2022 (J. Power Sources 525, 231094); batterydesign.net;
-  coolant_comparison_reviewed.xlsx.
-""")
+def bl_temp_profile_fig(delta_mm, k_oil, dT, T_bulk=35.0):
+    """Teaching figure: the temperature across a single stagnant film.
+    The whole point is that h is nothing more than k / delta - the fluid's
+    conductivity divided by how thick the near-wall stuck layer is."""
+    delta = max(delta_mm, 0.05) / 1000.0
+    h = k_oil / delta
+    q_flux = k_oil * dT / delta                      # W/m2
+    T_s = T_bulk + dT
+    xmax_mm = delta_mm * 3.2
+    fig = go.Figure()
+    fig.add_vrect(x0=0, x1=delta_mm, fillcolor="rgba(56,189,248,.18)",
+                  line_width=0, layer="below")
+    fig.add_trace(go.Scatter(
+        x=[0, delta_mm, xmax_mm], y=[T_s, T_bulk, T_bulk], mode="lines",
+        line=dict(color="#B91C1C", width=4), hoverinfo="skip"))
+    fig.add_vline(x=0, line=dict(color="#334155", width=8))
+    fig.add_annotation(x=delta_mm / 2, y=(T_s + T_bulk) / 2 + 0.02 * dT,
+                       text=f"stagnant film<br>δ = {delta_mm:.2f} mm<br>"
+                            "(conduction only)", showarrow=False,
+                       font=dict(size=11, color="#0369A1"))
+    fig.add_annotation(x=xmax_mm * 0.72, y=T_bulk + 0.06 * dT,
+                       text="moving bulk<br>(well mixed)",
+                       showarrow=False,
+                       font=dict(size=11, color="#475569"))
+    fig.add_annotation(x=0, y=T_s, text=f" wall {T_s:.0f} °C",
+                       showarrow=False, xanchor="left",
+                       font=dict(size=12, color="#B91C1C"))
+    fig.update_layout(
+        height=300, showlegend=False,
+        title=f"h = k/δ = {k_oil:.2f} / {delta_mm:.2f} mm = "
+              f"{h:.0f} W/m²·K    (heat flux {q_flux:.0f} W/m²)",
+        xaxis_title="distance from the wall [mm]",
+        yaxis_title="temperature [°C]",
+        plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=10, t=48, b=10))
+    return fig, h, q_flux
+
+
+def h_scaling_fig(fl, dT, L_now_mm):
+    """h = Nu k / L versus the characteristic length L, to make visible
+    that h is a result of the geometry, not a fixed property: taller
+    surfaces have a LOWER h (h ~ L^-1/4 in the laminar regime)."""
+    pf = film_props(fl, 35.0)
+    Ls = np.linspace(0.01, 0.20, 70)
+    hs = [nu_vertical_cc(rayleigh(pf, dT, L), pf["Pr"]) * pf["k"] / L
+          for L in Ls]
+    L0 = max(L_now_mm, 10.0) / 1000.0
+    h0 = nu_vertical_cc(rayleigh(pf, dT, L0), pf["Pr"]) * pf["k"] / L0
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=Ls * 1000, y=hs, mode="lines",
+                             line=dict(color=ACCENT, width=3)))
+    fig.add_trace(go.Scatter(x=[L_now_mm], y=[h0], mode="markers",
+                             marker=dict(size=13, color="#B91C1C")))
+    fig.add_vline(x=L_now_mm, line_dash="dash",
+                  annotation_text=f"L = {L_now_mm:.0f} mm")
+    fig.update_layout(
+        height=300, showlegend=False,
+        title="Bigger is worse: h falls as the surface gets taller "
+              "(h ~ L⁻¹ᐟ⁴)",
+        xaxis_title="characteristic length L [mm]",
+        yaxis_title=f"natural-convection h in {fl['name']} [W/m²·K]",
+        plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=10, t=48, b=10))
+    return fig, h0
+
+
+def sandwich_profile_fig(res, Q, h_cell, h_tube, g, d):
+    """The temperature climbing from the coolant to the cell core across
+    every station, each rise sized by its thermal resistance q*R. The two
+    oil films are the tall rungs; the tube wall is a whisker. Recomputes
+    the two oil films from the given h so the sliders move the picture."""
+    A_cell = g["A_cells"]
+    A_tube = g.get("A_tube_bare", g["A_tube_in"])
+    R_b = 1.0 / max(h_cell * A_cell, 1e-9)          # cell film
+    R_ot = 1.0 / max(h_tube * A_tube, 1e-9)         # tube (oil) film
+    R_wall, R_in = res["R_wall"], res["R_in"]
+    dT_core, dT_water = res["dT_core"], res["dT_water"]
+    Tw = d["T_water_in"] + 0.5 * dT_water           # mean water
+    steps = [("water", 0.0, "#0EA5E9"),
+             ("water film", Q * R_in, "#38BDF8"),
+             ("tube wall", Q * R_wall, "#94A3B8"),
+             ("oil film\n(tube side)", Q * R_ot, "#6366F1"),
+             ("bulk oil", 0.0, "#38BDF8"),
+             ("oil film\n(cell side)", Q * R_b, "#EF4444"),
+             ("cell can", 0.0, "#F59E0B"),
+             ("jellyroll core", dT_core, "#B91C1C")]
+    xs, tops, bots, cols, labs, drops = [], [], [], [], [], []
+    T = Tw
+    for name, dT, col in steps:
+        bots.append(T); T += dT; tops.append(T)
+        xs.append(name.replace("\n", "<br>")); cols.append(col)
+        labs.append(name); drops.append(dT)
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=xs, y=[t - b for t, b in zip(tops, bots)], base=bots,
+        marker_color=cols, width=0.6,
+        text=[f"+{dd:.1f}" if dd > 0.05 else "" for dd in drops],
+        textposition="outside",
+        hovertemplate="%{x}<br>ΔT = %{customdata:.2f} °C<extra></extra>",
+        customdata=drops))
+    fig.add_trace(go.Scatter(
+        x=xs, y=tops, mode="lines+markers",
+        line=dict(color="#0F172A", width=2, dash="dot"),
+        marker=dict(size=6, color="#0F172A"), hoverinfo="skip"))
+    fig.add_hline(y=d["T_limit"], line_dash="dash", line_color="#B91C1C",
+                  annotation_text=f"limit {d['T_limit']:.0f} °C")
+    fig.update_layout(
+        height=380, showlegend=False,
+        title=f"Every watt climbs {tops[-1] - bots[0]:.1f} °C from the "
+              "water to the core - the two oil films are the tall rungs",
+        yaxis_title="temperature [°C]",
+        plot_bgcolor="rgba(255,255,255,0)", paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=10, t=48, b=10))
+    return fig, dict(R_b=R_b, R_ot=R_ot, T_core=tops[-1], T_can=tops[-2])
+
+
+def _sci(x, sig=1):
+    """Format a number as clean LaTeX scientific notation, e.g.
+    7.5e-4 -> '7.5\\times10^{-4}'. Plain formatting near unity."""
+    import math as _m
+    if x == 0:
+        return "0"
+    e = int(_m.floor(_m.log10(abs(x))))
+    if -3 < e < 4:
+        return f"{x:.6g}"
+    m_ = x / (10 ** e)
+    return f"{m_:.{sig}f}\\times10^{{{e}}}"
+
+
+def learn_convection_html(k_oil, dT):
+    """A self-contained animated boundary-layer explorer: warm oil rises
+    past a hot cell wall, the no-slip film sets the temperature drop, and
+    a flow slider thins the film and updates h = k/delta live. Renders in
+    the browser (no Streamlit reruns), so the motion is smooth."""
+    return """
+<div id="cvroot" style="font-family:Inter,system-ui,sans-serif;color:#334155">
+  <canvas id="cv" width="720" height="360"
+          style="width:100%;max-width:720px;border-radius:10px;
+                 background:#0b1220"></canvas>
+  <div style="display:flex;gap:16px;align-items:center;margin-top:8px;
+              flex-wrap:wrap">
+    <label style="font-size:13px">Flow vigour
+      <input id="sp" type="range" min="0" max="100" value="8"
+             style="vertical-align:middle;width:200px">
+    </label>
+    <span id="ro" style="font-size:13px;font-weight:600;color:#0f172a"></span>
+  </div>
+  <div style="font-size:12px;color:#64748b;margin-top:4px">
+    Drag the slider: more flow thins the stuck film &delta;, and since
+    <b>h = k/&delta;</b>, the coefficient climbs &mdash; the oil and the
+    temperature difference never change.
+  </div>
+</div>
+<script>
+(function(){
+  const K = __KOIL__, DT = __DT__;
+  const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height, wallX = 90;
+  const sp = document.getElementById('sp'), ro = document.getElementById('ro');
+  const N = 130, P = [];
+  for(let i=0;i<N;i++) P.push({x: wallX + 6 + Math.random()*(W-wallX-16),
+                               y: Math.random()*H, r: 1+Math.random()*1.6});
+  function lerp(a,b,t){return a+(b-a)*t;}
+  function tempColor(f){ // f=0 cold(blue) .. 1 hot(red)
+    const r=Math.round(lerp(56,239,f)), g=Math.round(lerp(189,68,f)),
+          b=Math.round(lerp(248,68,f)); return 'rgb('+r+','+g+','+b+')';
+  }
+  function frame(){
+    const v = +sp.value/100;
+    const delta = (2.0/(1+3.2*v));               // mm, 2.0 -> ~0.2
+    const h = K/(delta/1000.0);
+    const dpx = Math.max(6, delta*26);           // film width in px
+    ctx.clearRect(0,0,W,H);
+    // bulk temperature wash (thermal layer near wall)
+    for(let xx=wallX; xx<W; xx+=6){
+      const f = Math.max(0, 1-(xx-wallX)/dpx);
+      ctx.fillStyle = 'rgba('+Math.round(lerp(20,239,f))+','+
+        Math.round(lerp(30,68,f))+','+Math.round(lerp(60,68,f))+','+
+        (0.10+0.55*f)+')';
+      ctx.fillRect(xx,0,6,H);
+    }
+    // the hot wall (cell)
+    const wg = ctx.createLinearGradient(wallX-40,0,wallX,0);
+    wg.addColorStop(0,'#7f1d1d'); wg.addColorStop(1,'#ef4444');
+    ctx.fillStyle = wg; ctx.fillRect(wallX-40,0,40,H);
+    ctx.fillStyle='#fecaca'; ctx.font='12px Inter,sans-serif';
+    ctx.save(); ctx.translate(wallX-26,H/2); ctx.rotate(-Math.PI/2);
+    ctx.textAlign='center'; ctx.fillText('hot cell wall',0,0); ctx.restore();
+    // film boundary line
+    ctx.strokeStyle='rgba(56,189,248,.9)'; ctx.setLineDash([5,4]);
+    ctx.beginPath(); ctx.moveTo(wallX+dpx,0); ctx.lineTo(wallX+dpx,H);
+    ctx.stroke(); ctx.setLineDash([]);
+    // rising particles: velocity ~0 at wall (no-slip), grows outward,
+    // and the whole field rises faster with flow vigour
+    for(const p of P){
+      const dx = p.x - wallX;
+      const prof = Math.min(1, dx/dpx);          // 0 at wall -> 1 at film edge
+      const speed = (0.25 + 3.6*v) * (0.15 + prof);
+      p.y -= speed;
+      if(p.y < -4){ p.y = H+4; p.x = wallX+6+Math.random()*(W-wallX-16); }
+      const f = Math.max(0, 1-dx/dpx);
+      ctx.fillStyle = tempColor(f);
+      ctx.globalAlpha = 0.5+0.5*prof;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,6.2832); ctx.fill();
+    }
+    ctx.globalAlpha=1;
+    // labels
+    ctx.fillStyle='#93c5fd'; ctx.font='12px Inter,sans-serif';
+    ctx.textAlign='left';
+    ctx.fillText('stuck film  δ = '+delta.toFixed(2)+' mm',
+                 wallX+6, H-14);
+    ctx.fillStyle='#cbd5e1';
+    ctx.fillText('warm oil rises →', W-150, 22);
+    ro.innerHTML = 'δ = '+delta.toFixed(2)+' mm &nbsp;→&nbsp; '+
+      'h = k/δ = '+K.toFixed(2)+'/'+delta.toFixed(2)+' mm = <b>'+
+      h.toFixed(0)+' W/m²·K</b> &nbsp;|&nbsp; flux '+
+      (h*DT).toFixed(0)+' W/m²';
+    requestAnimationFrame(frame);
+  }
+  frame();
+})();
+</script>
+""".replace("__KOIL__", f"{k_oil:.3f}").replace("__DT__", f"{dT:.1f}")
+
+
+def learn_tab(d, g, fl, res, masses, cool_df, loop, Q_duty, chil):
+    ACC = "#6366F1"
+    st.markdown(
+        "This tab builds the whole thermal picture from first principles, "
+        "with **every equation written inside the sentence that explains "
+        "it** and every symbol filled in from your live design so you can "
+        "watch it move. Keep one idea in mind throughout: the "
+        "heat-transfer coefficient $h$ (in W/m²·K) is **not** a property "
+        "you look up in a table - it is a *result* of the geometry, the "
+        "fluid, and how hard the fluid is moving. Change a dimension and "
+        "$h$ changes. The sliders let you see exactly that.")
+
+    # ============================================================= #
+    st.divider()
+    st.markdown("#### 1 · How heat actually moves, and why a thin film "
+                "decides everything")
+    st.markdown(
+        f"Heat travels in only three ways, and here only two matter.\n\n"
+        f"**Conduction** is heat diffusing through a material's own "
+        f"structure - hot molecules jostling cooler neighbours. Fourier's "
+        f"law fixes the rate: the flux (watts per m²) is "
+        f"$q'' = -k\\,\\dfrac{{dT}}{{dx}}$, so across a slab of thickness "
+        f"$\\Delta x$ and area $A$ the heat carried is "
+        f"$q = kA\\,\\dfrac{{\\Delta T}}{{\\Delta x}}$. The conductivity "
+        f"$k$ is what separates a good path from a bad one: copper carries "
+        f"heat at $k\\approx 400$ W/m·K, but {fl['name'].split('(')[0].strip()} "
+        f"manages only $k \\approx {fl['k']:.2f}$ - roughly "
+        f"{400/fl['k']:.0f}× worse. That gap is the whole story of this "
+        f"pack.\n\n"
+        f"**Convection** is a moving fluid physically carrying heat away. "
+        f"It beats conduction handily, *except* for one stubborn fact "
+        f"that governs the entire design: right at any solid wall the "
+        f"fluid is stuck. The no-slip condition means the oil touching a "
+        f"cell cannot move, so inside that thin film heat can only "
+        f"*conduct* across, at oil's feeble $k$. **That stagnant film is "
+        f"the bottleneck**, and almost everything we do to cool the pack "
+        f"is really about making it thinner.\n\n"
+        f"**Radiation** ($q = \\varepsilon\\sigma A(T_s^4 - T_\\infty^4)$) "
+        f"also moves heat, but at these gentle temperatures it is about a "
+        f"watt across the whole pack, so we set it aside.")
+    st.markdown(
+        "Here is the move that ties convection to a single number. Across "
+        "a film of thickness $\\delta$, Fourier's law gives "
+        "$q = \\dfrac{k}{\\delta}\\,A\\,\\Delta T$. We bundle the awkward "
+        "$k/\\delta$ into one symbol, the **heat-transfer coefficient** "
+        "$h \\equiv k/\\delta$, and write **Newton's law of cooling**:")
+    st.latex(r"q = h\,A\,\Delta T, \qquad h \equiv \frac{k}{\delta}.")
+    st.markdown(
+        "So $h$ is nothing more than the fluid's conductivity divided by "
+        "how thick the stuck layer is. Stir the fluid and the film thins, "
+        "$\\delta$ shrinks, and $h$ climbs - the fluid and the temperature "
+        "difference never change. Drag the film thickness below and watch "
+        "the temperature line steepen and $h$ rise.")
+    st.markdown("**See it move.** Warm oil rises past the hot cell wall; "
+                "right at the wall it is stuck (no-slip). More flow thins "
+                "the stuck film, and $h=k/\\delta$ climbs:")
+    components.html(learn_convection_html(fl["k"], 8.0), height=440)
+    st.markdown("And here is the same physics as a temperature graph - "
+                "the steeper the drop across the film, the higher $h$:")
+    lc1, lc2 = st.columns([1, 2])
+    with lc1:
+        d_bl = st.slider("Film thickness δ [mm]", 0.2, 3.0, 1.5, 0.1,
+                         key="ln_delta")
+        dT_bl = st.slider("Wall-to-bulk ΔT [°C]", 2.0, 25.0, 8.0, 1.0,
+                          key="ln_dtbl")
+    figbl, h_bl, q_bl = bl_temp_profile_fig(d_bl, fl["k"], dT_bl)
+    with lc2:
+        st.plotly_chart(figbl, width='stretch', key="ln_blfig")
+    thin_h = fl["k"] / (0.2e-3)
+    st.caption(f"At δ = {d_bl:.1f} mm the film gives h = {h_bl:.0f} "
+               f"W/m²·K; thin it to 0.2 mm and the same oil would give "
+               f"~{thin_h:.0f} - a {thin_h/h_bl:.0f}× jump with nothing "
+               f"but motion. This is why circulation matters more than "
+               f"fluid choice.")
+
+    # ============================================================= #
+    st.divider()
+    st.markdown("#### 2 · Why $h$ is a calculated result, not a number "
+                "you can look up")
+    st.markdown(
+        "We cannot measure $\\delta$ directly and it depends on the flow, "
+        "so engineers use a dimensionless ratio instead - the **Nusselt "
+        "number** $Nu \\equiv \\dfrac{hL}{k}$, which reads as *how many "
+        "times more heat this surface moves than if the same fluid across "
+        "the same length $L$ just sat there conducting*. $Nu = 1$ is pure "
+        "conduction; $Nu = 10$ means the moving fluid is ten times "
+        "better. Rearranged, this **is** the recipe for $h$:")
+    st.latex(r"h = \frac{Nu\,k}{L}.")
+    st.markdown(
+        "Everything now depends on finding $Nu$ - and $Nu$ depends on the "
+        "geometry and the flow, which is exactly why $h$ can never be a "
+        "fixed value. For a warm cell in still oil, the oil against it "
+        "heats, expands, grows lighter and rises: **natural, "
+        "buoyancy-driven convection**. How vigorous that rising flow is "
+        "captured by the **Rayleigh number**,")
+    st.latex(r"Ra_L = \frac{g\,\beta\,\Delta T\,L^{3}}{\nu\,\alpha}.")
+    st.markdown(
+        "Read it as a tug-of-war: gravity $g$ and thermal expansion "
+        "$\\beta$ drive the buoyancy; the temperature difference "
+        "$\\Delta T$ and the size $L$ set its scale; viscosity $\\nu$ and "
+        "thermal diffusivity $\\alpha$ resist. Note the $L^{3}$ - a taller "
+        "surface drives *much* stronger flow. The **Prandtl number** "
+        "$Pr = \\nu/\\alpha$ (how fast momentum spreads versus heat) sets "
+        "the layer shapes. The Churchill-Chu correlation, fitted to a "
+        "century of experiments, turns $Ra$ and $Pr$ into $Nu$:")
+    st.latex(r"Nu = \left(0.825 + \frac{0.387\,Ra^{1/6}}"
+             r"{\left[1+(0.492/Pr)^{9/16}\right]^{8/27}}\right)^{2}.")
+    st.markdown(
+        "Put the chain together and you have the answer: **dimensions and "
+        "$\\Delta T$ → $Ra$ → $Nu$ → $h$.** Set the three inputs and watch "
+        "each number flow through the equations to the $h$ your surface "
+        "actually gets.")
+
+    hk1, hk2, hk3 = st.columns(3)
+    L_hc = hk1.slider("Length L [mm]", 10.0, 200.0,
+                      float(round(d["h_cell"] * 1000)), 5.0, key="ln_L")
+    dT_hc = hk2.slider("ΔT [°C]", 2.0, 30.0, 8.0, 1.0, key="ln_dThc")
+    fl_names = list(cool_df["name"])
+    try:
+        fidx = fl_names.index(fl["name"])
+    except ValueError:
+        fidx = 0
+    fname = hk3.selectbox("Fluid", fl_names, index=fidx, key="ln_fluid")
+    flc = fluid_dict(cool_df[cool_df["name"] == fname].iloc[0])
+    L_m = L_hc / 1000.0
+    pf = film_props(flc, 35.0)
+    Ra_hc = rayleigh(pf, dT_hc, L_m)
+    Nu_hc = nu_vertical_cc(Ra_hc, pf["Pr"])
+    h_hc = Nu_hc * pf["k"] / L_m
+    A_cell = math.pi * 0.021 * 0.07
+    q_cell = h_hc * A_cell * dT_hc
+    st.markdown(f"With $L = {L_hc:.0f}$ mm, $\\Delta T = {dT_hc:.0f}$ °C, "
+                f"and **{fname.split('(')[0].strip()}** "
+                f"($k = {pf['k']:.3f}$, $\\nu = {pf['nu']*1e6:.0f}$ cSt, "
+                f"$\\alpha = {pf['alpha']*1e6:.3f}$ mm²/s, "
+                f"$Pr = {pf['Pr']:.0f}$):")
+    st.latex(r"Ra_L=\frac{g\,\beta\,\Delta T\,L^{3}}{\nu\,\alpha}"
+             r"=\frac{9.81\times%s\times%d\times(%.3f)^{3}}"
+             r"{%s\times%s}=%s"
+             % (_sci(pf["beta"]), int(dT_hc), L_m, _sci(pf["nu"]),
+                _sci(pf["alpha"]), _sci(Ra_hc, 2)))
+    st.latex(r"Nu=\left(0.825+\frac{0.387\,Ra^{1/6}}{[\,\cdots\,]}"
+             r"\right)^{2}=%.1f \qquad\Longrightarrow\qquad "
+             r"h=\frac{Nu\,k}{L}=\frac{%.1f\times%.3f}{%.3f}"
+             r"=\boxed{%.0f}\ \mathrm{W/m^2K}"
+             % (Nu_hc, Nu_hc, pf["k"], L_m, h_hc))
+    st.markdown(f"One 21700 cell of that surface would then shed "
+                f"$q = hA\\Delta T = {h_hc:.0f}\\times{A_cell*1e3:.2f}"
+                f"\\times10^{{-3}}\\times{dT_hc:.0f} = "
+                f"\\mathbf{{{q_cell:.1f}}}$ **W**.")
+    fighs, _ = h_scaling_fig(flc, dT_hc, L_hc)
+    st.plotly_chart(fighs, width='stretch', key="ln_hscale")
+    st.info(
+        f"**Watch what just moved.** Doubling $L$ drops $h$ by about a "
+        f"sixth (bigger is *worse*, because $Nu\\propto Ra^{{1/4}}\\propto "
+        f"L^{{3/4}}$, so $h = Nu\\,k/L \\propto L^{{-1/4}}$). Switching to "
+        f"a thinner, more conductive fluid raises it. Letting the surface "
+        f"run hotter raises $h$ only as $\\Delta T^{{1/4}}$ - you cannot "
+        f"cool a pack by letting it get hot. $h$ is a *consequence* of "
+        f"these choices, never a dial you set directly.")
+
+    # ============================================================= #
+    st.divider()
+    st.markdown("#### 3 · Following a single watt: where the temperature "
+                "is actually lost")
+    st.markdown(
+        f"Now assemble the whole path a watt takes to escape, from the "
+        f"cell core to the coolant. The pack is making **{Q_duty/1000:.2f} "
+        f"kW** right now, and each step of the escape is a **thermal "
+        f"resistance**. A convective film is $R = \\dfrac{{1}}{{hA}}$; a "
+        f"plane wall is $R = \\dfrac{{\\Delta x}}{{kA}}$; a round tube "
+        f"wall is $R = \\dfrac{{\\ln(d_o/d_i)}}{{2\\pi k L}}$. Resistances "
+        f"in a chain simply add, and - exactly like a voltage divider - "
+        f"the biggest one drops the most temperature, "
+        f"$\\Delta T_i = q\\,R_i$.\n\n"
+        f"The chain, water to core: the **water film**, the **tube wall** "
+        f"(a whisker - copper or aluminium barely matters), the **oil "
+        f"film on the tube**, the **bulk oil** (which carries but hardly "
+        f"resists), the **oil film on the cell**, then conduction through "
+        f"the jellyroll to the **core**. The two oil films are the tall "
+        f"rungs. Move the slider - stirring thins both oil films at once - "
+        f"and watch the tall rungs shrink and the core drop toward the "
+        f"limit.")
+    u_ln = st.slider("Oil circulation speed [cm/s] (0 = still, buoyancy "
+                     "only)", 0.0, 15.0, 0.0, 0.5, key="ln_stir")
+    u_eff = max(u_ln / 100.0, res["u_ts"])
+    hc_ln = h_cell_side(fl, res["T_b"], res["T_il"], d["h_cell"],
+                        d["d_cell"], g["gap_mm"], u_eff)["h"] * d["cal_h"]
+    ht_ln = h_tube_side(fl, res["T_il"], res["T_wall"], d["tube_od"],
+                        u_eff)["h"] * d["cal_h"]
+    figsw, swinfo = sandwich_profile_fig(res, res["Q_eff"], hc_ln, ht_ln,
+                                         g, d)
+    st.plotly_chart(figsw, width='stretch', key="ln_sandwich")
+    st.caption(
+        f"At {u_ln:.1f} cm/s the cell film is h = {hc_ln:.0f} and the tube "
+        f"film h = {ht_ln:.0f} W/m²·K, and the core sits at "
+        f"{swinfo['T_core']:.1f} °C. So what actually matters, in order: "
+        f"(1) the two oil films - move the oil and buy sink area; (2) "
+        f"getting the water turbulent (next section); (3) how hard you "
+        f"push, since heat grows with the *square* of C-rate; (4) the "
+        f"set-point trade. What barely matters: tube material, and fluid "
+        f"brand beyond its viscosity class.")
+
+    # ============================================================= #
+    st.divider()
+    st.markdown("#### 4 · The four levers on $h$ and the temperature")
+    st.markdown("##### Lever A - viscosity (weakly, through $Ra$)")
+    st.markdown(
+        "Since $Ra \\propto 1/\\nu$ and $h \\propto Ra^{1/6\\text{–}1/4}$, "
+        "a thinner oil gives a higher $h$ - but only as roughly "
+        "$h\\propto\\nu^{-1/4}$. The plot places every candidate fluid: "
+        "viscosity (horizontal) matters far more than conductivity "
+        "(colour and size), yet the whole $h$ axis spans barely 3×. "
+        "**Fluid choice cannot buy fast charge; geometry and stirring "
+        "can.**")
+    xs, ys, names, ks = [], [], [], []
+    for _, r in cool_df.iterrows():
+        f3 = fluid_dict(r)
+        p3 = film_props(f3, 35.0)
+        Ra3 = rayleigh(p3, 8.0, d["h_cell"])
+        ys.append(nu_vertical_cc(Ra3, p3["Pr"]) * p3["k"] / d["h_cell"])
+        xs.append(r["nu_cSt"]); names.append(r["name"]); ks.append(r["k"])
+    figV = go.Figure(go.Scatter(
+        x=xs, y=ys, mode="markers+text",
+        text=thin_labels(xs, ys, names, logx=True),
+        hovertext=names, hoverinfo="text+x+y",
+        textposition="top center", textfont=dict(size=11),
+        marker=dict(size=8 + 60 * np.array(ks) / max(ks), color=ks,
+                    colorscale="YlOrBr", colorbar=dict(title="k [W/mK]"))))
+    figV.update_layout(height=380, xaxis_type="log",
+                       xaxis_title="kinematic viscosity at 25 °C [cSt] (log)",
+                       yaxis_title="natural-convection h on a 21700 [W/m²·K]",
+                       title="Viscosity is the strong axis; conductivity "
+                             "the weak one",
+                       plot_bgcolor="rgba(255,255,255,0)",
+                       paper_bgcolor="rgba(0,0,0,0)")
+    st.plotly_chart(figV, width='stretch', key="ln_visc")
+
+    st.markdown("##### Lever B - the cell gap (throttling the buoyancy)")
+    st.markdown(
+        "Squeeze the cells closer and you throttle the buoyant flow in "
+        "the gaps. The thin-channel buoyant velocity scales as "
+        "$u_\\mathrm{gap} \\sim \\dfrac{g\\beta\\Delta T\\,\\delta^{2}}"
+        "{\\nu}$, so $u_\\mathrm{gap}\\propto\\delta^{2}$ - halve the gap "
+        "and you quarter the flow. Below about 6 mm the penalty bites "
+        "hard (Wang et al. measured gap velocity falling 1.8 → 0.5 mm/s "
+        "as spacing shrank 8 → 2 mm). This is the energy-density tax of "
+        "*static* immersion; stirring largely removes it.")
+    gaps = np.linspace(0.5, 10, 60)
+    figG = go.Figure(go.Scatter(x=gaps, y=[gap_factor(x) for x in gaps],
+                                line=dict(color=ACC, width=3)))
+    figG.add_vline(x=g["gap_mm"], line_dash="dash",
+                   annotation_text=f"your gap {g['gap_mm']:.1f} mm")
+    figG.update_layout(height=280, xaxis_title="cell-to-cell gap [mm]",
+                       yaxis_title="h penalty factor",
+                       title="Below ~6 mm the buoyant flow is throttled",
+                       plot_bgcolor="rgba(255,255,255,0)",
+                       paper_bgcolor="rgba(0,0,0,0)")
+    st.plotly_chart(figG, width='stretch', key="ln_gap")
+
+    st.markdown("##### Lever C - stirring (forced convection)")
+    st.markdown(
+        f"A little motion beats none by a lot. Left alone the pack even "
+        f"stirs itself: the warm column is lighter than the cold return, "
+        f"and that buoyant head $\\rho\\beta g H\\,\\Delta T$ drives a slow "
+        f"thermosiphon loop against friction "
+        f"$\\left(K + f\\frac{{L}}{{D_h}}\\right)\\frac{{1}}{{2}}\\rho "
+        f"u^{{2}}$ until the two balance - here about "
+        f"{res['u_ts']*1000:.1f} mm/s. Force it faster with a small pump "
+        f"or guided plates and both films thin together.")
+    us = np.linspace(0, 0.2, 50)
+    hcs, hts = [], []
+    for u in us:
+        ue = max(u, res["u_ts"])
+        hcs.append(h_cell_side(fl, res["T_b"], res["T_il"], d["h_cell"],
+                               d["d_cell"], g["gap_mm"], ue)["h"]
+                   * d["cal_h"])
+        hts.append(h_tube_side(fl, res["T_il"], res["T_wall"],
+                               d["tube_od"], ue)["h"] * d["cal_h"])
+    figU = go.Figure()
+    figU.add_trace(go.Scatter(x=us * 100, y=hcs, name="cell film",
+                              line=dict(color="#EF4444", width=3)))
+    figU.add_trace(go.Scatter(x=us * 100, y=hts, name="tube film",
+                              line=dict(color="#6366F1", width=3)))
+    figU.add_vline(x=res["u_ts"] * 100, line_dash="dot",
+                   line_color="#10B981",
+                   annotation_text=f"thermosiphon {res['u_ts']*1000:.1f} mm/s")
+    figU.update_layout(height=280, xaxis_title="oil velocity [cm/s]",
+                       yaxis_title="h [W/m²·K]",
+                       title="The pack stirs itself a little; a circulator "
+                             "does it properly",
+                       plot_bgcolor="rgba(255,255,255,0)",
+                       paper_bgcolor="rgba(0,0,0,0)")
+    st.plotly_chart(figU, width='stretch', key="ln_stirfig")
+
+    st.markdown("##### Lever D - fins (buying area $A$ when $h$ is stuck)")
+    st.markdown(
+        "When $h$ is stuck low, buy area $A$ instead. A fin works only if "
+        "heat can run out along it before the film pulls it off: the fin "
+        "parameter $m = \\sqrt{2h/(k\\,t)}$ sets the reach, and the "
+        "efficiency $\\eta = \\tanh(mL)/(mL)$ says how much of the fin is "
+        "pulling its weight. Oil's low $h$ is the fin-maker's friend - "
+        "even long, thin fins stay ~90% efficient, so the effective area "
+        "$A_\\mathrm{eff} = A_\\mathrm{base} + \\eta\\,A_\\mathrm{fin}$ "
+        "grows almost for free.")
+    hs = np.linspace(0.002, 0.02, 40)
+    eff, gain = [], []
+    for hh in hs:
+        fp = fin_pack(d["tube_od"], hh, d["fin_t"] if d["fins_on"] else 0.0005,
+                      d["fin_p"] if d["fins_on"] else 0.004, 205.0,
+                      max(res["h_tube"], 30))
+        eff.append(fp["eta"]); gain.append(fp["area_gain"])
+    figF = go.Figure()
+    figF.add_trace(go.Scatter(x=hs * 1000, y=gain, name="area gain ×",
+                              line=dict(color=INK, width=3)))
+    figF.add_trace(go.Scatter(x=hs * 1000, y=eff, name="fin efficiency",
+                              yaxis="y2", line=dict(color=ACC, width=3)))
+    figF.update_layout(height=280, xaxis_title="fin height [mm]",
+                       yaxis_title="effective area multiplier",
+                       yaxis2=dict(title="Schmidt efficiency",
+                                   overlaying="y", side="right",
+                                   range=[0, 1.05]),
+                       title="Long thin fins stay efficient in oil",
+                       plot_bgcolor="rgba(255,255,255,0)",
+                       paper_bgcolor="rgba(0,0,0,0)")
+    st.plotly_chart(figF, width='stretch', key="ln_fins")
+
+    # ============================================================= #
+    st.divider()
+    st.markdown("#### 5 · The water side: the laminar plateau")
+    st.markdown(
+        "Inside the tubes it is forced flow, and the regime is "
+        "everything. The Reynolds number $Re = \\dfrac{4\\dot m}{\\pi\\mu "
+        "d_i}$ decides: below about 2300 the flow is laminar and, "
+        "remarkably, $Nu$ is a *constant* (3.66 for fixed wall "
+        "temperature, 4.36 for fixed flux) - so **pumping harder does "
+        "nothing for $h$**. Cross into turbulence and the Gnielinski "
+        "correlation takes over, "
+        "$Nu = \\dfrac{(f/8)(Re-1000)Pr}{1+12.7\\sqrt{f/8}\\,"
+        "(Pr^{2/3}-1)}$, and $h$ climbs steeply. The lesson: get the "
+        "water turbulent, and *then* flow buys cooling; before that, it "
+        "does not.")
+    fls = np.linspace(0.5, 60, 80)
+    hws, res_w = [], []
+    for q in fls:
+        md = q / 60 * loop["rho"] / 1000 / max(d["n_tubes"], 1)
+        w = h_water_inside(loop, md, g["d_i"], g["L_tube"])
+        hws.append(w["h"]); res_w.append(w["Re"])
+    figW = go.Figure(go.Scatter(x=fls, y=hws, line=dict(color="#0EA5E9",
+                                                        width=3)))
+    figW.add_vline(x=d["flow_lpm"], line_dash="dash",
+                   annotation_text="your flow")
+    i2300 = int(np.argmin(np.abs(np.array(res_w) - 2300)))
+    figW.add_vline(x=fls[i2300], line_dash="dot", line_color="#B91C1C",
+                   annotation_text="Re 2300")
+    figW.update_layout(height=280, xaxis_title="total water flow [L/min]",
+                       yaxis_title="h inside tube [W/m²·K]",
+                       title="Laminar: flat. Turbulent: it climbs.",
+                       plot_bgcolor="rgba(255,255,255,0)",
+                       paper_bgcolor="rgba(0,0,0,0)")
+    st.plotly_chart(figW, width='stretch', key="ln_water")
+
+    # ============================================================= #
+    st.divider()
+    st.markdown("#### 6 · Heat that fights back, and the core the coolant "
+                "cannot reach")
+    st.markdown(
+        f"The cell's own resistance falls as it warms, "
+        f"$R_\\mathrm{{dc}}(T) = R_{{25}}\\,e^{{-k_\\mathrm{{dc}}(T-25)}}$, "
+        f"so a hotter cell makes *less* heat at the same current - running "
+        f"at {res['T_b']:.0f} °C instead of 25 cuts generation by about "
+        f"**{100*(1-r_of_T(d, res['T_b'])/d['r_dc']):.0f}%**. That is why "
+        f"a warm set point is a rare double win and why the transient "
+        f"self-stabilises near the limit. But one resistance no coolant "
+        f"can touch is the spread from the jellyroll core to the can, "
+        f"$R_\\mathrm{{core}} = \\dfrac{{1}}{{4\\pi k_r H}} = "
+        f"{r_core(d):.2f}$ K/W - pure conduction through the winding, "
+        f"worth **{res['dT_core']:.1f} °C** here. That is why the tool "
+        f"reports the **core** temperature separately: it is the node "
+        f"closest to the limit.")
+    Ts = np.linspace(0, 60, 61)
+    figD = go.Figure(go.Scatter(x=Ts, y=[r_of_T(d, t) for t in Ts],
+                                line=dict(color=INK, width=3)))
+    figD.add_vline(x=res["T_b"], line_dash="dash",
+                   annotation_text="your cell")
+    figD.update_layout(height=280, xaxis_title="cell temperature [°C]",
+                       yaxis_title="DCIR [mΩ]",
+                       title=f"R(T) = R₂₅·exp(−{d['k_dcir']*100:.1f}%/K × "
+                             f"(T−25))",
+                       plot_bgcolor="rgba(255,255,255,0)",
+                       paper_bgcolor="rgba(0,0,0,0)")
+    st.plotly_chart(figD, width='stretch', key="ln_dcir")
+
+    # ============================================================= #
+    st.divider()
+    st.markdown("#### 7 · Buffering: the oil is a thermal flywheel")
+    st.markdown(
+        "The oil and cells together are a thermal flywheel of capacity "
+        "$C = \\sum_i m_i c_{p,i}$. Faced with a burst of excess heat "
+        "$Q_\\mathrm{excess}$ they can absorb, they buy time "
+        "$\\tau = \\dfrac{C\\,\\Delta T_\\mathrm{allow}}{Q_\\mathrm{excess}}$ "
+        "before the temperature drifts up. Size the steady heat exchanger "
+        "for the *continuous* duty and let the flywheel eat the peaks.")
+    cQ, cT = st.columns(2)
+    Q_ex = cQ.slider("Excess heat beyond removal [kW]", 0.1, 15.0, 3.0,
+                     0.1, key="ln_qex")
+    dT_h = cT.slider("Allowed temperature drift [°C]", 2.0, 25.0, 10.0,
+                     1.0, key="ln_drift")
+    Ctot = masses["C_oil"] + masses["C_batt"]
+    st.markdown(
+        f"Thermal mass = oil {masses['C_oil']/1000:.0f} kJ/K + cells "
+        f"{masses['C_batt']/1000:.0f} kJ/K = **{Ctot/1000:.0f} kJ/K**, so "
+        f"$\\tau = \\dfrac{{{Ctot/1000:.0f}\\times{dT_h:.0f}}}"
+        f"{{{Q_ex:.1f}\\times10^{{3}}}} = "
+        f"\\mathbf{{{Ctot*dT_h/(Q_ex*1000)/60:.1f}}}$ **minutes** per "
+        f"{dT_h:.0f} °C of drift.")
+
+    # ============================================================= #
+    st.divider()
+    with st.expander("Reference: moving the oil, safety, the production "
+                     "benchmark, and sources"):
+        st.markdown(f"""
+**How you would actually move the oil**
+
+| Option | How | Power | Reaches tight gaps? | Notes |
+|---|---|---|---|---|
+| Thermosiphon only | buoyancy loop | 0 W | weakly ({res['u_ts']*1000:.1f} mm/s here) | free; dies if the cold plane is low |
+| Magnetic stirrer | sealed impeller in the bulk | ~1-3 W | no - bypasses the gaps | cheapest forced option |
+| Pump + jet manifold | nozzles along a wall | ~2-5 W | partially | directional; nozzle fouling |
+| **Serpentine plates (guided)** | plates form parallel channels; small pump | **~0.5 W at 5 cm/s** | **yes - every gap** | plates double as fins; needs a manifold |
+| Full pumped immersion | external HX loop | 20+ W | yes | the AMG HPB80 architecture |
+
+**Safety and practicalities**
+- **Water-in-oil leak** is the single-point failure: hold oil pressure above water pressure so leaks go oil-to-water, or use double-walled tubes with leak detection (transformer practice).
+- **Expansion**: $\\beta = {fl['beta']:.1e}$ /K on {masses['V_oil_L']:.0f} L means ~{fl['beta']*masses['V_oil_L']*70:.1f} L over a −10 to 60 °C band. Use a bellows or bladder, not free air.
+- **Materials**: seal and insulation compatibility, ester moisture uptake, copper-oxidation catalysis (use inhibited fluids or plated tubes).
+- **Venting**: a cell venting into a sealed flooded box is a pressure spike (see the Safety tab); the flip side is that oxygen exclusion and the oil's heat absorption suppress propagation.
+- **Fluid supply**: 3M exited PFAS manufacture end-2025; anchor the programme on esters.
+
+**Production reference - Mercedes-AMG HPB80** (batterydesign.net): 560 × 21700, 112S5P, 6.1 kWh, 89 kg, 68.5 Wh/kg, 150 kW peak / 70 kW continuous, pumped dielectric (14 L) through an external dielectric-to-water HX, 10 kW cooling, 45 °C set point.
+
+**Sources**: Wang et al. 2023 (J. Energy Storage 62, 106821); Zou et al. 2024 (J. Energy Storage 83, 110634); Roe et al. 2022 (J. Power Sources 525, 231094); batterydesign.net.
+
+*A note on units: temperature **differences** are written in °C here; a difference of 1 K and 1 °C are identical in size, only the zero points of the two scales differ.*""")
 
 
 def improve_core(d, g, fl, masses, res, Q_duty, C_steady, cool_df):
@@ -3433,16 +3902,21 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                         f"the can and the core clear the limit under "
                         f"tolerance.")
                 else:
+                    can_clause = (
+                        f"The can still clears comfortably "
+                        f"(0 / {mc['M']}), but "
+                        if mc.get("n_exceed", 0) == 0 else
+                        f"The can exceeds too "
+                        f"({mc.get('n_exceed', 0)} / {mc['M']}), and ")
                     st.warning(
                         f"**Core node: {n_ec} / {mc['M']} samples put "
                         f"the core over {zd['T_limit']:.0f} °C** (worst "
                         f"core {mc['Tcore'].max():.2f} °C, point "
-                        f"estimate {mc['p_exceed_core'] * 100:.0f}%). The "
-                        f"can clears comfortably (0 / {mc['M']}), but on "
-                        f"a core/plating criterion the rule of three no "
-                        f"longer applies and this design sits at the "
-                        f"limit as drawn - see the h_c sweep for why the "
-                        f"core margin is thin.")
+                        f"estimate {mc['p_exceed_core'] * 100:.0f}%). "
+                        f"{can_clause}on a core/plating criterion the "
+                        f"rule of three no longer applies and this "
+                        f"design sits at the limit as drawn - see the "
+                        f"h_c sweep for why the core margin is thin.")
             zh1, zh2 = st.columns(2)
             fh1 = go.Figure(go.Histogram(x=mc["Tmax"], nbinsx=24,
                                          marker_color="#6366F1"))
@@ -3941,84 +4415,8 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
 
     # ---------------- Learn ---------------- #
     with tabs[9]:
-        with st.expander("0. Where the heat goes - the whole story in plain "
-                         "words", expanded=True):
-            hot1 = "the water film inside the tubes" \
-                if res["R_in"] >= max(res["R_b"], res["R_ot"]) else \
-                "the oil film on the cells" if res["R_b"] >= res["R_ot"] \
-                else "the oil film on the tubes"
-            st.markdown(f"""
-Every watt starts inside a cell: pushing current through the cell's own
-resistance makes heat, and pushing twice the current makes **four times**
-the heat. Right now that is **{Q_duty/1000:.2f} kW** across the whole pack.
-
-That heat then has to make a journey, and every step of the journey costs
-temperature. Think of temperature like pressure: heat only flows downhill,
-and the harder a step is, the more "hill" it eats.
-
-**Step 1 - out of the cell.** Heat conducts from the core of the jellyroll
-to the can. Nothing you do to the coolant helps here; only the cell's own
-build and how hard you push it. Today this step costs
-**{res['dT_core']:.1f} °C** (core is hotter than the can by that much).
-
-**Step 2 - through the first oil film.** A thin, lazy layer of oil clings
-to every cell. Heat must conduct through it, and oil conducts poorly, so
-this thin layer is one of the two big tolls: **{Q_duty*res['R_b']:.1f} °C**
-today. Moving the oil (thermosiphon, stirring, or your serpentine plates)
-thins this layer; that is the whole reason circulation matters.
-
-**Step 3 - the oil itself.** The bulk oil is the pack's mixer and shock
-absorber: it spreads heat sideways so cells stay within
-**{res['spread']:.1f} °C** of each other, and it soaks up bursts of heat so
-short peaks never reach the limit. It costs almost no temperature - it is
-the carrier, not a toll.
-
-**Step 4 - through the second oil film, onto the metal.** The same thin-film
-problem again, on the tubes. This is why fins{' and your plates' if d.get('plate_on') else ''}
-exist: if the film is bad, buy more area. Toll today:
-**{Q_duty*res['R_ot']:.1f} °C**.
-
-**Step 5 - through the tube wall.** Essentially free
-({Q_duty*res['R_wall']*1000:.0f} thousandths of a degree). Copper vs
-aluminium does not matter here.
-
-**Step 6 - into the water.** Another film, but water is a far better
-conductor - as long as the flow is turbulent. In slow, smooth (laminar)
-flow, pumping harder changes nothing; you must cross into turbulence.
-Toll today: **{Q_duty*res['R_in']:.1f} °C**, and the water itself warms
-**{res['dT_water']:.1f} °C** from inlet to outlet as it carries the heat away.
-
-**Step 7 - the chiller.** The water dumps the heat to the outside air,
-spending about **{chil['P_el']:.0f} W of electricity** to do it. A warmer
-water set point makes the chiller's job easier *and* makes the cells
-generate less heat - a rare double win, up to the cell limit.
-
-**So what actually matters?** In order: (1) the two oil films - move the
-oil and buy sink area; (2) getting the water turbulent; (3) how hard you
-push, because heat grows with the square of C-rate; (4) the set-point
-trade. What barely matters: tube material, and fluid brand beyond its
-viscosity class. Right now your single biggest toll is **{hot1}** - fix
-that one first.
-
-*A note on units:* we write temperature **differences** in °C here. You may
-see "K" (kelvin) in textbooks for the same thing - a difference of 1 K and
-1 °C are identical in size; only the zero points of the scales differ.""")
-        learn_tab(d, g, fl, res, masses, cool_df, loop)
-        with st.expander("11. Moving the oil: the realistic options"):
-            st.markdown(f"""
-| Option | How | Power | Reaches tight gaps? | Notes |
-|---|---|---|---|---|
-| Thermosiphon only | buoyancy loop | 0 W | weakly ({res['u_ts']*1000:.1f} mm/s here) | free; dies if the cold plane is low |
-| Magnetically coupled stirrer | sealed impeller in the bulk | ~1-3 W | no - flow bypasses the gaps | cheapest forced option; what "Open stirring" models |
-| Pump + jet manifold | small pump, nozzles along a wall | ~2-5 W | partially | directional; nozzle fouling |
-| **Serpentine plates (guided)** | plates between rows form parallel channels; small pump | **~0.5 W at 5 cm/s** | **yes - every gap sees forced flow** | plates double as conduction fins (+~2 m² eff.); needs manifold + brazed joints |
-| Oscillating plate | reciprocating drive | ~2-10 W | partially | seals and fatigue |
-| Full pumped immersion | external HX loop | 20+ W | yes | the AMG HPB80 architecture |
-
-The guided-serpentine option is your Idea A: compare it live in the **Ideas**
-tab and adopt it via **Design - Circulation method**. Viscosity falls with
-temperature (Andrade law) and the solver already evaluates every film at its
-local film temperature - see the ν(T) curve in Design.""")
+        learn_tab(d, g, fl, res, masses, cool_df, loop,
+                  Q_duty, chil)
 
     # ---------------- Report ---------------- #
     figs_r = dict(
@@ -5415,8 +5813,8 @@ the 4th-percentile Wh/kg position against the BEV database.
 **Cost impact.** Thermal-system costs per architecture are tabled below
 from editable assumptions (dielectric {cost['oil_gbp_L']:.0f} £/L, chiller
 {cost['chiller_gbp_kWel']:.0f} £/kW el, fabrication x{cost['fab_factor']:.1f}).
-For scale: the cells themselves are ~**${cell_cost_usd:,.0f}** at the BNEF
-December-2025 average of $79/kWh (cell level; BEV packs averaged $99/kWh,
+For scale: the cells themselves are ~**{cell_cost_usd:,.0f} USD** at the BNEF
+December-2025 average of 79 USD/kWh (cell level; BEV packs averaged 99 USD/kWh,
 Europe typically +56%), so every thermal option here is single-digit
 percent of cell cost.
 
