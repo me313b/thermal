@@ -116,6 +116,8 @@ def cockpit_html(payload: dict) -> str:
  <button class="preset" data-p="serp">Serpentine</button>
  <button class="preset" data-p="eco">Economy 30&deg;</button>
  <button class="preset" data-p="c4">4C attempt</button>
+ <button class="preset" data-p="reset"
+  style="border-color:#F59E0B;color:#FCD34D">&#8635; Reset</button>
  <span id="cp-status">live</span>
  <button class="tbtn" id="cp-copy">&#10697; Copy for Design</button></div>
 <div id="cp-grid">
@@ -537,6 +539,7 @@ $('cp-dry').addEventListener('click',()=>{
  setCtl('twin',Math.min(C.tamb+5,40));recalc();});
 document.querySelectorAll('.preset').forEach(b=>{
  b.addEventListener('click',()=>{const p=b.dataset.p;
+  if(p==='reset'){location.reload();return;}
   if(p==='base'){setCtl('c',2);C.circ='thermosiphon';
    setCtl('flow',10);setCtl('twin',20);}
   if(p==='serp'){C.circ='serpentine';setCtl('u',0.05);

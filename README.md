@@ -536,3 +536,53 @@ core-crossing figure is harmonised with the live app, and the response
 memos' last stale numbers are corrected. A separate pre-existing render
 bug (currency dollar signs in the Report tab parsed as LaTeX math) is
 fixed by using USD wording.
+
+## v9.7 System & BOM tab, a 3D serpentine view, cockpit reset, sharper Learn intro
+Four things this release.
+
+**New "System & BOM" tab.** Turns the thermal answer into hardware. It
+sizes every component from the live design - water pump (flow, head,
+hydraulic and electrical power), oil circulation, the dielectric-to-water
+heat exchanger (UA = Q/ΔT and area from an editable U), the chiller/dry-
+cooler (reject duty, COP, electrical), coolant volume/mass, tubes,
+plates, and an expansion vessel sized from the fluid's thermal expansion
+over an editable service band. It prints a full bill of materials with
+per-item cost, mass and notes, and totals as a percentage of cell cost.
+The honest finding it surfaces: for full immersion the flooded coolant
+volume dominates the thermal bill (here the dielectric alone is a large
+fraction of cell cost), which is single-phase immersion's real economic
+penalty versus a cold plate and far worse for two-phase. A dedicated
+two-phase section covers the coolant chemistry (fluoroketone FK-5-1-12 as
+the low-GWP front-runner, why the PFAS hydrofluoroethers are being retired,
+low-GWP refrigerant options), materials compatibility (FKM/FFKM seals,
+avoid EPDM/polycarbonate), the extra items a boiling system needs
+(condenser, vapour-tight enclosure, pressure management, often no pump),
+and when two-phase wins or loses - plus a two-phase BOM delta and an
+architecture-comparison table (air / cold plate / single-phase immersion /
+two-phase) on surface h, pumping, parts, cost and maturity, and an
+applications map. Cost and sizing assumptions are all editable inline. The
+Report tab's cost-scale note is corrected to match (it previously
+understated the coolant-dominated cost).
+
+**3D serpentine view in the cockpit.** A drag-to-rotate, self-contained 3D
+visualization of the architecture the flat instruments cannot show: cells
+in a grid, a metal cooling plate in each gap, water tubes bonded along the
+plates running through-plane (into the page), and coolant flowing front to
+back and warming as it collects heat - the real cell → oil film → plate →
+tube → water path. It is built from the live geometry and temperatures,
+with an auto-spin toggle and flow/explode sliders, and hand-rolled
+orthographic 3D so it needs no external libraries.
+
+**Cockpit reset button.** A Reset control restores the cockpit to its
+default state.
+
+**Learn intro.** The opening now frames this specific problem - a high
+energy-density 21700 pack rejecting kilowatts into a poor-convecting
+dielectric, where two stagnant oil films gate everything and the whole
+architecture is an assault on those films - rather than a generic preamble.
+
+Note on approach-specific cockpit parameters: the cockpit already hides
+and shows the circulation controls by mode (velocity is hidden for a pure
+thermosiphon; plate thickness and plate contact appear only for the
+serpentine mode). That behaviour is retained and can be extended to more
+parameters on request.

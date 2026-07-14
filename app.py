@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v9.6"
+APP_VERSION = "v9.7"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -37,6 +37,7 @@ from cockpit import cockpit_html
 from zonal import (KernelBank, solve_zonal, monte_carlo,
                    derived_layout)
 import schematics as _S
+import pack3d as _P3
 
 pio.templates["packlab"] = go.layout.Template(layout=dict(
     font=dict(family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif",
@@ -1382,14 +1383,28 @@ def learn_convection_html(k_oil, dT):
 def learn_tab(d, g, fl, res, masses, cool_df, loop, Q_duty, chil):
     ACC = "#6366F1"
     st.markdown(
-        "This tab builds the whole thermal picture from first principles, "
-        "with **every equation written inside the sentence that explains "
-        "it** and every symbol filled in from your live design so you can "
-        "watch it move. Keep one idea in mind throughout: the "
-        "heat-transfer coefficient $h$ (in W/m²·K) is **not** a property "
-        "you look up in a table - it is a *result* of the geometry, the "
-        "fluid, and how hard the fluid is moving. Change a dimension and "
-        "$h$ changes. The sliders let you see exactly that.")
+        f"The problem this pack sets is specific and unforgiving. It packs "
+        f"21700 cells at high energy density and asks them to reject "
+        f"several kilowatts of ohmic heat - **{Q_duty/1000:.2f} kW** right "
+        f"now - into a dielectric oil that is a *poor* convector: its "
+        f"conductivity is only $k \\approx {fl['k']:.2f}$ W/m·K, some "
+        f"{400/fl['k']:.0f}× below copper, and it is viscous enough that, "
+        f"left to itself, it barely moves. Every watt a cell makes must "
+        f"cross **two nearly-stationary oil films** - one clinging to the "
+        f"cell, one to the metal that carries the heat onward to water - "
+        f"and those two films, not the choice of fluid and not the tube "
+        f"material, set how hard this pack can be driven. Every feature of "
+        f"the architecture (the guided serpentine plates, the water tubes, "
+        f"any stirring) is really an assault on those two films.")
+    st.markdown(
+        "This tab derives that claim from the ground up, with each "
+        "equation set **inside the sentence that explains it** and every "
+        "symbol filled from your live design. The one idea it turns on: "
+        "the heat-transfer coefficient $h$ is not a value you look up in a "
+        "table - it is a **result** of the geometry, the fluid, and how "
+        "hard the fluid is moving. That is why the levers that matter here "
+        "are geometric and hydraulic, and the sliders let you feel how "
+        "much each one actually buys.")
 
     # ============================================================= #
     st.divider()
@@ -1823,6 +1838,338 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop, Q_duty, chil):
 **Sources**: Wang et al. 2023 (J. Energy Storage 62, 106821); Zou et al. 2024 (J. Energy Storage 83, 110634); Roe et al. 2022 (J. Power Sources 525, 231094); batterydesign.net.
 
 *A note on units: temperature **differences** are written in °C here; a difference of 1 K and 1 °C are identical in size, only the zero points of the two scales differ.*""")
+
+
+def system_tab(d, g, fl, res, masses, loop, chil, Q_duty, C_steady):
+    import pandas as _pd
+    st.markdown("#### What the system physically needs: sizing, bill of "
+                "materials, two-phase, and how it compares")
+    st.caption("Everything here is computed from your live design and a "
+               "set of editable assumptions. It turns the thermal answer "
+               "into hardware: what to buy, how big, how heavy, how much "
+               "it costs, and which architecture is right for the job.")
+
+    Q_w = res.get("Q_w", Q_duty)
+    dTw = res.get("dT_water", 2.0)
+    Ecap = masses["E_kwh"]
+
+    # ---- editable assumptions ----
+    with st.expander("Cost, sizing and duty assumptions (edit these)",
+                     expanded=False):
+        a1, a2, a3, a4 = st.columns(4)
+        oil_L = a1.number_input("Dielectric ester [£/L]", 3.0, 60.0, 9.0,
+                                0.5, key="sy_oil")
+        cu_kg = a2.number_input("Copper [£/kg]", 4.0, 20.0, 8.5, 0.5,
+                                key="sy_cu")
+        al_kg = a3.number_input("Aluminium [£/kg]", 1.5, 8.0, 3.2, 0.1,
+                                key="sy_al")
+        fab = a4.number_input("Fabrication ×", 1.0, 3.0, 1.8, 0.1,
+                              key="sy_fab")
+        b1, b2, b3, b4 = st.columns(4)
+        pump_gbp = b1.number_input("Pump/circulator [£]", 10.0, 400.0,
+                                   28.0, 2.0, key="sy_pump")
+        chil_kW = b2.number_input("Chiller [£/kW electrical]", 60.0,
+                                  400.0, 140.0, 5.0, key="sy_chil")
+        hx_U = b3.number_input("HX overall U [W/m²·K]", 500.0, 6000.0,
+                               3000.0, 100.0, key="sy_hxU",
+                               help="Plate dielectric-to-water HX; "
+                                    "3000 is typical for a brazed plate "
+                                    "unit.")
+        hx_dT = b4.number_input("HX approach ΔT [°C]", 2.0, 15.0, 5.0,
+                                0.5, key="sy_hxdt")
+        c1_, c2_ = st.columns(2)
+        Trange = c1_.slider("Service temperature band [°C] (for "
+                            "expansion vessel)", 40.0, 120.0, 70.0, 5.0,
+                            key="sy_trange")
+        pump_eta = c2_.slider("Pump total efficiency", 0.15, 0.7, 0.35,
+                              0.05, key="sy_peta")
+
+    # =============================================================== #
+    st.markdown("##### 1 · The duty the hardware must serve")
+    dc = st.columns(4)
+    dc[0].metric("Continuous heat", f"{Q_duty/1000:.2f} kW",
+                 f"at {C_steady:.2f}C RMS")
+    dc[1].metric("Into the water", f"{Q_w/1000:.2f} kW",
+                 f"ΔT {dTw:.1f} °C rise")
+    dc[2].metric("Pack energy", f"{Ecap:.1f} kWh")
+    dc[3].metric("Cell limit", f"{d['T_limit']:.0f} °C",
+                 "core" if d.get("limit_core") else "can")
+    st.caption(f"The loop carries {Q_w/1000:.2f} kW from the dielectric "
+               f"to the water and the chiller lifts it to ambient. "
+               f"Everything downstream is sized to move that heat with "
+               f"margin, hold the cells at or below {d['T_limit']:.0f} °C, "
+               f"and keep cell-to-cell spread under ~5 °C.")
+
+    # =============================================================== #
+    st.markdown("##### 2 · Component sizing (from your design)")
+    # -- water pump --
+    wpp = water_pump_power(d, g, loop)
+    mdot_w = d["flow_lpm"] / 60.0 * loop["rho"] / 1000.0
+    head_m = wpp["dp"] / (loop["rho"] * 9.81)
+    P_hyd_w = wpp["dp"] * mdot_w / loop["rho"]
+    P_pump_w = P_hyd_w / pump_eta
+    # -- oil circulation --
+    if d.get("plate_on"):
+        u_oil = d.get("u_guided", 0.05)
+        P_oil = serpentine_pump(d, g, fl, u_oil)["P"]
+        oil_mode = "serpentine plates"
+    elif d["u_oil"] > 1e-6:
+        u_oil = d["u_oil"]; P_oil = stirrer_power(d, g, fl, u_oil)
+        oil_mode = "magnetic stirrer"
+    else:
+        u_oil = 0.0; P_oil = 0.0; oil_mode = "thermosiphon (passive)"
+    # -- internal dielectric->water HX --
+    lm = max(hx_dT, 1.0)
+    UA_hx = Q_w / lm
+    A_hx = UA_hx / hx_U
+    # -- chiller --
+    P_chil = chil["P_el"]; COP = chil["COP"]
+    Q_reject = Q_w + P_pump_w + P_oil
+    # -- coolant --
+    V_oil_L = masses["V_oil_L"]; m_oil = masses["m_oil"]
+    # -- tubes / plates --
+    m_tubes = masses["m_tubes"]; m_plates = masses.get("m_plates", 0.0)
+    tube_mat = d.get("tube_mat", "Copper")
+    tube_L = d["n_tubes"] * g["L_tube"]
+    # -- expansion vessel --
+    dV_exp = fl["beta"] * (V_oil_L / 1000.0) * Trange
+    V_vessel_L = 1.3 * dV_exp * 1000.0
+
+    sc = st.columns(3)
+    with sc[0]:
+        st.markdown("**Water pump / circulator**")
+        st.markdown(
+            f"- Flow **{d['flow_lpm']:.0f} L/min**, head "
+            f"**{head_m:.2f} m** ({wpp['dp']/1000:.2f} kPa)\n"
+            f"- Hydraulic {P_hyd_w:.1f} W → electrical "
+            f"**{P_pump_w:.1f} W** at η={pump_eta:.2f}\n"
+            f"- Tube velocity {wpp['v']:.2f} m/s, Re "
+            f"{wpp['Re']:.0f} ({res.get('water_regime','')})\n"
+            f"- Class: {'small brushless circulator' if P_pump_w < 30 else 'automotive coolant pump'}")
+        st.markdown("**Oil circulation**")
+        st.markdown(f"- Mode: **{oil_mode}**\n"
+                    f"- {('~%.2f W at %.0f mm/s' % (P_oil, u_oil*1000)) if u_oil>0 else 'no pump - buoyancy only'}")
+    with sc[1]:
+        st.markdown("**Dielectric→water heat exchanger**")
+        st.markdown(
+            f"- Duty **{Q_w/1000:.2f} kW**, approach {hx_dT:.0f} °C\n"
+            f"- UA = Q/ΔT = **{UA_hx:.0f} W/K**\n"
+            f"- Area ≈ UA/U = **{A_hx*1e4:.0f} cm²** "
+            f"({A_hx:.3f} m²) at U={hx_U:.0f}\n"
+            f"- Type: brazed-plate or a coil in the reservoir")
+        st.markdown("**Chiller / dry-cooler**")
+        st.markdown(
+            f"- Reject **{Q_reject/1000:.2f} kW** to ambient\n"
+            f"- Electrical **{P_chil/1000:.2f} kW** at COP {COP:.1f}\n"
+            f"- A dry-cooler (no compressor) works if a warm water set "
+            f"point is acceptable")
+    with sc[2]:
+        st.markdown("**Coolant (dielectric)**")
+        st.markdown(
+            f"- Volume **{V_oil_L:.1f} L**, mass **{m_oil:.1f} kg**\n"
+            f"- β = {fl['beta']:.1e} /K → expands "
+            f"{dV_exp*1000:.2f} L over {Trange:.0f} °C\n"
+            f"- Expansion vessel **≈ {V_vessel_L:.2f} L** (bladder)")
+        st.markdown("**Tubes, plates, fittings**")
+        st.markdown(
+            f"- {d['n_tubes']} × {d['tube_od']*1000:.0f} mm {tube_mat} "
+            f"tube, total **{tube_L:.1f} m** ({m_tubes:.1f} kg)\n"
+            f"- Plates **{m_plates:.1f} kg** aluminium\n"
+            f"- Manifold, quick-connects, seals, sensors")
+
+    # =============================================================== #
+    st.markdown("##### 3 · Bill of materials (this build)")
+    def gpair(mat_kg, cu, al):
+        return cu if mat_kg else al
+    rho_cost = cu_kg if tube_mat == "Copper" else al_kg
+    rows = [
+        ("Dielectric ester coolant", f"{V_oil_L:.1f} L", 1,
+         oil_L * V_oil_L, m_oil,
+         "esters (rapeseed/synthetic); post-PFAS default"),
+        (f"{tube_mat} tubes", f"{tube_L:.1f} m × "
+         f"{d['tube_od']*1000:.0f} mm", d["n_tubes"],
+         rho_cost * m_tubes * fab, m_tubes, "drawn tube, brazed"),
+        ("Aluminium cooling plates",
+         f"{m_plates:.1f} kg" if m_plates else "none (no serpentine)",
+         (d["n_rows"] - 1) if m_plates else 0,
+         al_kg * m_plates * fab, m_plates,
+         "conduction fin + tube carrier"),
+        ("Water circulator / pump", f"{P_pump_w:.0f} W, {head_m:.1f} m",
+         1, pump_gbp, 0.4, "brushless, sealed"),
+        ("Dielectric→water HX", f"{UA_hx:.0f} W/K, {A_hx:.3f} m²", 1,
+         max(60.0, A_hx * 900.0), 0.8 + A_hx * 5, "brazed plate"),
+        ("Chiller / dry-cooler", f"{P_chil/1000:.2f} kW el", 1,
+         chil_kW * P_chil / 1000.0, 3.0 + Q_reject / 1000.0,
+         "compressor or fan-coil"),
+        ("Expansion vessel", f"{V_vessel_L:.2f} L bladder", 1,
+         25.0 + 6 * V_vessel_L, 0.5, "accommodates thermal swing"),
+        ("Reservoir + filter", "~%.0f%% of fill" % 15, 1, 45.0, 0.8,
+         "de-aeration, particulate filter"),
+        ("Manifold + quick-connects", "parallel inlet/outlet", 1,
+         40.0, 0.6, "dielectric-rated seals (FKM)"),
+        ("Sensors + controller", "3× RTD, 1× flow, 1× level", 1,
+         85.0, 0.3, "BMS thermal interlocks"),
+        ("Seals, hose, misc.", "FKM/EPDM as compatible", 1, 35.0, 0.5,
+         "fluid-compatibility critical"),
+    ]
+    bom = _pd.DataFrame(rows, columns=[
+        "Item", "Spec / sizing", "Qty", "Cost £", "Mass kg", "Notes"])
+    tot_cost = bom["Cost £"].sum(); tot_mass = bom["Mass kg"].sum()
+    cell_cost = Ecap * 79.0 / 0.79   # £ at 79 USD/kWh
+    st.dataframe(bom.style.format({"Cost £": "£{:.0f}",
+                                   "Mass kg": "{:.1f}"}),
+                 width='stretch', hide_index=True)
+    mtot = st.columns(3)
+    mtot[0].metric("Thermal-system cost", f"£{tot_cost:.0f}",
+                   f"{100*tot_cost/max(cell_cost,1):.0f}% of cell cost")
+    mtot[1].metric("Thermal-system mass", f"{tot_mass:.1f} kg",
+                   f"{100*tot_mass/masses['m_pack']:.0f}% of pack")
+    mtot[2].metric("For reference, cells", f"£{cell_cost:,.0f}",
+                   f"{Ecap:.1f} kWh @ 79 USD/kWh")
+    oil_cost = oil_L * V_oil_L
+    st.caption(
+        f"Costs are order-of-magnitude engineering estimates from the "
+        f"editable assumptions, not quotes. The honest headline the "
+        f"numbers give: **the coolant volume dominates** - at "
+        f"£{oil_L:.0f}/L the dielectric alone is £{oil_cost:.0f} "
+        f"(~{100*oil_cost/max(cell_cost,1):.0f}% of cell cost), and the "
+        f"full thermal system is ~{100*tot_cost/max(cell_cost,1):.0f}%. "
+        f"That flooded-volume cost is single-phase immersion's real "
+        f"economic penalty against a cold plate, and it is far worse for "
+        f"two-phase (the fluoroketone is 7-13× the ester price). It is "
+        f"also why reduced-fill and guided-channel designs matter: less "
+        f"trapped fluid, smaller bill.")
+
+    # =============================================================== #
+    st.markdown("##### 4 · How the approaches compare")
+    comp = _pd.DataFrame([
+        ["Forced air", "10-30", "air (free)", "very low", "fan + ducting",
+         "low", "highest (weak h, big ΔT)", "mature",
+         "cannot hold fast-charge; large gradients"],
+        ["Cold plate (indirect)", "80-150", "water-glycol", "low-med",
+         "plates, TIM, pump, HX", "medium", "low", "mature (most EVs)",
+         "contact resistance; cells cooled on one face"],
+        ["Single-phase immersion (this)", "150-400", "dielectric ester",
+         "low-med", "tubes/plates, pump, HX, vessel", "medium-high",
+         "low-med", "emerging (AMG HPB80)",
+         "oil films dominate; needs circulation"],
+        ["Two-phase immersion", "1000-3000+", "fluoroketone / low-GWP "
+         "refrigerant", "very low (passive)",
+         "condenser, vapor space, sealed vessel", "high",
+         "med-high (fluid + condenser)", "early / niche",
+         "fluid cost & GWP; vapor management"],
+    ], columns=["Architecture", "Surface h [W/m²·K]", "Coolant",
+                "Pumping power", "Key parts", "Complexity",
+                "Relative cost", "Maturity", "Main limitation"])
+    st.dataframe(comp, width='stretch', hide_index=True)
+    st.caption("The surface h column is the whole story: air struggles to "
+               "reach 30, this single-phase immersion pack works in the "
+               "low hundreds (and the two oil films still gate it), while "
+               "boiling in two-phase reaches thousands because latent heat "
+               "carries the load near-isothermally. Capability rises left "
+               "to right; so does cost and complexity.")
+
+    # =============================================================== #
+    st.markdown("##### 5 · Two-phase immersion: what it takes")
+    st.markdown(
+        "Two-phase cooling replaces the two stagnant oil films with "
+        "**boiling**. Where single-phase convection gives "
+        "$q = hA\\Delta T$ with $h$ in the hundreds, nucleate boiling "
+        "gives $q = h_b A\\Delta T$ with $h_b$ in the thousands, because "
+        "each bubble carries away the latent heat "
+        "$q = \\dot m_\\mathrm{vap}\\,h_{fg}$ at a nearly constant "
+        "saturation temperature. The cells sit in a bath that boils at "
+        "their target temperature, vapour rises to a condenser, and "
+        "liquid returns - often with **no pump at all** (a passive "
+        "thermosiphon loop). That is the appeal: the highest heat flux "
+        "and the lowest parasitic power, at the same time.")
+    tp1, tp2 = st.columns(2)
+    with tp1:
+        st.markdown("**Coolant - the whole design hinges on it**")
+        st.markdown(
+            "The saturation (boiling) temperature *is* the cell "
+            "temperature, so the fluid is chosen to boil near 34-50 °C at "
+            "roughly atmospheric pressure, be a strong dielectric, and be "
+            "materials-benign:\n"
+            "- **Fluoroketone FK-5-1-12** (3M Novec 649/1230): boils "
+            "~49 °C, non-flammable, low GWP (~1), the current front-"
+            "runner; costly.\n"
+            "- **Hydrofluoroethers** (Novec 7000 ~34 °C, 7100 ~61 °C): "
+            "good dielectrics but **PFAS** - 3M is exiting production, so "
+            "avoid for new programmes.\n"
+            "- **Low-GWP refrigerants** R-1233zd(E) (~18 °C) and "
+            "R-1336mzz(Z) (~33 °C): excellent boiling, but volatile and "
+            "pressure-managed.\n"
+            "- Hydrocarbons/esters can two-phase too but are flammable or "
+            "boil too high.")
+        st.markdown("**Materials compatibility**")
+        st.markdown(
+            "- Seals: **FKM/FFKM** (Viton) preferred; EPDM and some "
+            "elastomers swell.\n"
+            "- Avoid polycarbonate and some engineering plastics with "
+            "fluoroketones; PTFE/PEEK are safe.\n"
+            "- Metals (Al, Cu, steel) are fine; the enemy is water "
+            "ingress (hydrolysis) and non-condensable gases.")
+    with tp2:
+        st.markdown("**Extra items versus single-phase**")
+        st.markdown(
+            "- A **condenser** (vapour → liquid), water- or air-cooled, "
+            "sized on the full duty.\n"
+            "- A sealed, **vapour-tight enclosure** with a vapour plenum "
+            "above the liquid.\n"
+            "- **Pressure management**: relief valve, and a "
+            "non-condensable-gas purge; the box runs near the fluid's "
+            "saturation pressure.\n"
+            "- A **sight glass / level** and fill port; the fluid is "
+            "expensive, so leaks matter.\n"
+            "- Often you **delete the pump** - the phase change drives "
+            "the loop.")
+        st.markdown("**When two-phase wins, and when it does not**")
+        st.markdown(
+            "- **Wins**: fast charge (>4C), aerospace/eVTOL and other "
+            "power- and weight-critical duties, and anywhere near-"
+            "isothermal cells or minimal parasitic power matter most.\n"
+            "- **Loses**: cost-sensitive volume production, GWP/PFAS "
+            "regulation exposure, and programmes that need proven fluid "
+            "supply chains today - where single-phase ester immersion or "
+            "a cold plate is the pragmatic choice.")
+    tp_bom = _pd.DataFrame([
+        ["Fluoroketone coolant", f"~{V_oil_L:.0f} L", "£40-120/L",
+         f"£{V_oil_L*70:,.0f} (≈7-13× the ester)"],
+        ["Condenser", f"{Q_reject/1000:.1f} kW", "-",
+         "adds mass + cost, offsets pump saving"],
+        ["Vapour-tight enclosure", "sealed + plenum", "premium",
+         "heavier than a vented box"],
+        ["Pump", "often none", "-", "passive thermosiphon: −£/−W"],
+    ], columns=["Two-phase item", "Sizing", "Unit", "Cost impact"])
+    st.dataframe(tp_bom, width='stretch', hide_index=True)
+
+    # =============================================================== #
+    st.markdown("##### 6 · Where each approach is applied")
+    st.markdown(
+        "- **Mainstream EVs** - cold plates with water-glycol: cheapest "
+        "compliant path at pack scale; most production packs today.\n"
+        "- **Performance / fast-charge EVs and motorsport** - single-"
+        "phase dielectric immersion (Mercedes-AMG HPB80, this class): "
+        "uniform temperatures and high sustained C-rate, weight "
+        "acceptable.\n"
+        "- **eVTOL / aerospace** - two-phase or single-phase immersion: "
+        "power density and near-isothermal cells outweigh fluid cost; "
+        "weight and safety are paramount.\n"
+        "- **Grid / BESS** - forced air or cold plate: cost and "
+        "simplicity dominate; energy, not power, is the driver.\n"
+        "- **Data-centre servers** (the analogue that de-risked the "
+        "supply chain) - two-phase immersion baths for very high heat "
+        "flux; the fluids and hardware come straight from that "
+        "industry.\n"
+        "- **Defence / directed-energy and pulsed loads** - two-phase, "
+        "for the transient flux and isothermality.\n\n"
+        "For this pack, the model puts you in the single-phase immersion "
+        "band: the serpentine plate-channel architecture buys most of the "
+        "uniformity of full immersion at a fraction of the pumping power, "
+        "and the two-phase step is the reserve you reach for only if the "
+        "duty climbs past what circulation and the water film can "
+        "carry.")
 
 
 def improve_core(d, g, fl, masses, res, Q_duty, C_steady, cool_df):
@@ -3012,7 +3359,7 @@ def main():
 
     tabs = st.tabs(["Design", "Duty", "Results", "Cockpit", "Zones",
                     "Improve", "Ideas", "Safety", "Compare",
-                    "Learn", "Validate", "Report"])
+                    "Learn", "Validate", "System", "Report"])
 
     with tabs[0]:
         colL, colR = st.columns([1.15, 1], gap="large")
@@ -3493,6 +3840,38 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                         cal=d.get("cal_h", 1.0),
                         KT=K_TUBE, RT=RHO_TUBE))
         components.html(cockpit_html(cp_pay), height=820)
+
+        st.markdown("##### 3D view of the serpentine architecture")
+        st.caption("The geometry the flat instruments cannot show: cells "
+                   "in a grid, a metal cooling plate in each gap, water "
+                   "tubes bonded along the plates and running "
+                   "**through-plane** (into the page), and coolant "
+                   "flowing front to back as it collects heat. Drag to "
+                   "rotate; the flow animates. This is the actual heat "
+                   "path - cell → oil film → plate → tube wall → water.")
+        _dTw3 = res.get("dT_water", 2.0)
+        p3 = dict(D=round(d["d_cell"] * 1000, 1),
+                  Ht=round(d["h_cell"] * 1000, 1),
+                  pitch=round(d["pitch"] * 1000, 1),
+                  gap=round(g["gap_mm"], 2),
+                  plate_t=round(d.get("plate_t", 0.0015) * 1000, 2),
+                  tube_od=round(d["tube_od"] * 1000, 1),
+                  nx=4, ny=3, tubes_z=2,
+                  Tcell=round(res["T_b"], 1),
+                  Tw_in=round(d["T_water_in"], 1),
+                  Tw_out=round(d["T_water_in"] + _dTw3, 1),
+                  limit=round(d["T_limit"], 1),
+                  ns_np=f"{d['Ns']}S{d['Np']}P")
+        components.html(_P3.pack3d_html(p3), height=560)
+        if not d.get("plate_on"):
+            _cm = "stirred" if d["u_oil"] > 0 else "static thermosiphon"
+            st.caption(
+                f"Note: your Design uses a {_cm} circulation method, not "
+                "the guided serpentine plates - the 3D view above shows "
+                "the serpentine concept for reference. Switch Circulation "
+                "method to *Serpentine plates* in Design (or the cockpit) "
+                "to make it the live architecture.")
+
         with st.expander("What the cockpit computes (the ported "
                          "equations)"):
             st.markdown("The cockpit is a faithful browser port of the "
@@ -4455,6 +4834,10 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                   kwh=masses["E_kwh"], mass=masses["m_pack"], Cmax=Cmax,
                   chil_el=chil["P_el"])
     with tabs[11]:
+        system_tab(d, g, fl, res, masses, loop, chil,
+                   Q_duty, C_steady)
+
+    with tabs[12]:
         cbt, _ = st.columns([1, 3])
         cbt.download_button("Download this report (.html)",
                             data=export_report_html(secs, figs_r, meta_r),
@@ -5815,8 +6198,10 @@ from editable assumptions (dielectric {cost['oil_gbp_L']:.0f} £/L, chiller
 {cost['chiller_gbp_kWel']:.0f} £/kW el, fabrication x{cost['fab_factor']:.1f}).
 For scale: the cells themselves are ~**{cell_cost_usd:,.0f} USD** at the BNEF
 December-2025 average of 79 USD/kWh (cell level; BEV packs averaged 99 USD/kWh,
-Europe typically +56%), so every thermal option here is single-digit
-percent of cell cost.
+Europe typically +56%). Against that, the flooded coolant volume is the
+largest thermal line item for the immersion rows, so the thermal system is a
+meaningful fraction of cell cost, not a rounding error - the full bill of
+materials, item by item, is in the System tab.
 
 **Performance and the honest comparison.** The same cells and duty under
 six approaches - immersion rows from the full validated solver, dry rows
