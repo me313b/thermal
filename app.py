@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.0"
+APP_VERSION = "v10.1"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -5163,50 +5163,51 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                    Q_duty, C_steady)
 
     with tabs[12]:
-        cbt, cbo, _ = st.columns([1, 1.4, 1.6])
+        st.caption("Take this report with you: the HTML file is "
+                   "instant; Build renders every section, table and "
+                   "figure into real Word, PowerPoint and PDF files "
+                   "of the design exactly as it stands now.")
+        cbt, cfg, cbo = st.columns([1.1, 0.9, 1.1])
         cbt.download_button("Download this report (.html)",
                             data=export_report_html(secs, figs_r, meta_r),
                             file_name="pack_design_report.html",
                             mime="text/html", use_container_width=True)
-        with cbo.popover("Export as Word / PowerPoint / PDF",
-                         use_container_width=True):
-            st.caption("Builds the full report - every section, table "
-                       "and figure - as real files. Figures need the "
-                       "kaleido package (in requirements.txt).")
-            inc_figs = st.checkbox("Include figures", True,
-                                   key="rx_figs")
-            if st.button("Build the three files", key="rx_build",
-                         use_container_width=True):
-                import report_export as _RX
-                with st.spinner("Rendering figures and laying out "
-                                "documents..."):
-                    _pngs = _RX.figs_to_png(figs_r) if inc_figs else {}
-                    if inc_figs and not _pngs:
-                        st.info("kaleido not available - exporting "
-                                "text-only.")
-                    st.session_state["rx_files"] = dict(
-                        docx=_RX.build_docx(secs, meta_r, _pngs),
-                        pptx=_RX.build_pptx(secs, meta_r, _pngs),
-                        pdf=_RX.build_pdf(secs, meta_r, _pngs))
-            if "rx_files" in st.session_state:
-                _fx = st.session_state["rx_files"]
-                st.download_button(
-                    "Word report (.docx)", data=_fx["docx"],
-                    file_name="pack_design_report.docx",
-                    mime="application/vnd.openxmlformats-officedocument"
-                         ".wordprocessingml.document",
-                    use_container_width=True, key="rx_dl_docx")
-                st.download_button(
-                    "PowerPoint deck (.pptx)", data=_fx["pptx"],
-                    file_name="pack_design_report.pptx",
-                    mime="application/vnd.openxmlformats-officedocument"
-                         ".presentationml.presentation",
-                    use_container_width=True, key="rx_dl_pptx")
-                st.download_button(
-                    "PDF report (.pdf)", data=_fx["pdf"],
-                    file_name="pack_design_report.pdf",
-                    mime="application/pdf",
-                    use_container_width=True, key="rx_dl_pdf")
+        inc_figs = cfg.checkbox("Include figures", True, key="rx_figs",
+                                help="Figures render via the kaleido "
+                                     "package (in requirements.txt).")
+        if cbo.button("Build Word / PowerPoint / PDF", key="rx_build",
+                      type="primary", use_container_width=True):
+            import report_export as _RX
+            with st.spinner("Rendering figures and laying out "
+                            "documents..."):
+                _pngs = _RX.figs_to_png(figs_r) if inc_figs else {}
+                if inc_figs and not _pngs:
+                    st.info("kaleido not available - exporting "
+                            "text-only.")
+                st.session_state["rx_files"] = dict(
+                    docx=_RX.build_docx(secs, meta_r, _pngs),
+                    pptx=_RX.build_pptx(secs, meta_r, _pngs),
+                    pdf=_RX.build_pdf(secs, meta_r, _pngs))
+        if "rx_files" in st.session_state:
+            _fx = st.session_state["rx_files"]
+            d1, d2, d3 = st.columns(3)
+            d1.download_button(
+                "Word report (.docx)", data=_fx["docx"],
+                file_name="pack_design_report.docx",
+                mime="application/vnd.openxmlformats-officedocument"
+                     ".wordprocessingml.document",
+                use_container_width=True, key="rx_dl_docx")
+            d2.download_button(
+                "PowerPoint deck (.pptx)", data=_fx["pptx"],
+                file_name="pack_design_report.pptx",
+                mime="application/vnd.openxmlformats-officedocument"
+                     ".presentationml.presentation",
+                use_container_width=True, key="rx_dl_pptx")
+            d3.download_button(
+                "PDF report (.pdf)", data=_fx["pdf"],
+                file_name="pack_design_report.pdf",
+                mime="application/pdf",
+                use_container_width=True, key="rx_dl_pdf")
         render_report_tab(secs, figs_r, meta_r)
 
     # ---------------- Validate and tune ---------------- #

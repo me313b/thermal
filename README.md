@@ -587,6 +587,14 @@ thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
 
+## v10.1
+
+- The Word / PowerPoint / PDF export now sits directly on the Report tab as a visible row (checkbox, Build button, then three download buttons), rather than inside a popover - features stay visible by default. Verified end to end inside the running app.
+
+## v10.1
+
+Report export is now a first-class, always-visible feature of the Report tab, not a buried control. A caption plus a three-button bar sit at the top of the tab: instant HTML download, an include-figures toggle, and a primary Build Word / PowerPoint / PDF button; the three download buttons appear right below once the files are built. No popovers, no expanders. The export regenerates all three files from the design exactly as it stands at that moment.
+
 ## v10.0
 
 The closed-loop release. Four threads: the external oil pump architecture, real tube cross-sections, the tube-count/plate coupling, and report files.
