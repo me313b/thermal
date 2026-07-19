@@ -301,6 +301,22 @@ function serpP(f,g,u,plt){if(u<=1e-6)return 0;const p=props(f,35);
  nch=Math.max(g.nrow-1,1)*2,
  dp=12*p.rho*p.nu*g.platelen*u/(s*s)+3*0.5*p.rho*u*u;
  return dp*(u*s*g.H*nch)/0.35;}
+function propP(f,g,u){if(u<=1e-6)return 0;
+ const p=props(f,35),Re=u*g.Dh/p.nu,
+ fr=Re<2300?64/Math.max(Re,1):0.316*Math.pow(Re,-0.25),
+ dp=(fr*g.H/g.Dh+2)*0.5*p.rho*u*u;
+ return dp*(u*g.Aflow)/0.30;}
+function extP(f,g,u,plt){if(u<=1e-6)
+  return{P:0,dp:0,dpk:0,dpp:0,v:0,lpm:0};
+ const p=props(f,35),
+ s=Math.max((g.pm-g.Dm-plt)/2,5e-4),
+ nch=Math.max(g.nrow-1,1)*2,
+ dpk=12*p.rho*p.nu*g.platelen*u/(s*s)+3*0.5*p.rho*u*u,
+ Vd=u*s*g.H*nch,dP=C.pipeD/1000,Ap=Math.PI*dP*dP/4,
+ vp=Vd/Ap,Rep=vp*dP/p.nu,
+ fp=Rep<2300?64/Math.max(Rep,1):0.316*Math.pow(Rep,-0.25),
+ dpp=(fp*C.pipeL/dP+8)*0.5*p.rho*vp*vp,dp=dpk+dpp;
+ return{P:dp*Vd/0.35,dp,dpk,dpp,v:vp,lpm:Vd*60000};}
 function chiller(Qw,Tin,Tamb){const Tc=Tin-5+273.15,
  Th=Tamb+10+273.15,lift=Math.max(Th-Tc,3),
  COP=Math.max(0.45*Tc/lift,0.4);
@@ -315,9 +331,9 @@ function solve(cOverride){
   ?Math.log(g.od/g.di)/(2*Math.PI*KT[C.tmat]*g.Lt*g.nt)
   :(C.twall/1000)/(KT[C.tmat]*0.5*(g.ts.Pin+g.ts.Pout)*g.Lt*g.nt);
  const Ratm=1/Math.max(C.hext*g.Aext,1e-9);
- const ext=C.circ==='extpump',
+ const ext=C.circ==='extpump',prop=C.circ==='prop',
  serp=C.circ==='serpentine'||ext,stir=C.circ==='stirred';
- const uc=(serp||stir)?C.u:0;
+ const uc=(serp||stir||prop)?C.u:0;
  const bb=busR(g);
  let Til=C.twin+8,Tb=Til+6,Twl=C.twin+2,Q=1000,uts=0,dTl=0;
  let Rb=0,Rot=0,Ao=0,pl={A:0,eta:0,m:0},hc=0,ht=0,fv=0;
@@ -331,7 +347,9 @@ function solve(cOverride){
   const pc=props(f,0.5*(Tb+Til));
   const Rac=Ra_(pc,Tb-Til,g.H);
   let hn=nuVert(Rac,pc.Pr)*gapf(g.gap)*pc.k/g.H,hf=0;
-  if(ue>1e-6)hf=nuCB(ue*g.Dm/pc.nu,pc.Pr)*pc.k/g.Dm;
+  if(ue>1e-6){if(prop){const ReL=ue*g.H/pc.nu;
+    hf=0.664*Math.sqrt(Math.max(ReL,1))*Math.pow(pc.Pr,1/3)*pc.k/g.H;}
+   else hf=nuCB(ue*g.Dm/pc.nu,pc.Pr)*pc.k/g.Dm;}
   hc=blend(hn,hf)*K.cal;
   const pt=props(f,0.5*(Til+Twl));
   const Rat=Ra_(pt,Til-Twl,g.od);
@@ -365,7 +383,8 @@ function solve(cOverride){
  const Tcore=Tb+(Q/g.N)*rCore;
  const Pp=waterPump(g);
  const xl=ext?extP(f,g,C.u,C.plt/1000):null;
- const Pc=ext?xl.P:serp?serpP(f,g,C.u,C.plt/1000)
+ const Pc=ext?xl.P:prop?propP(f,g,C.u)
+  :serp?serpP(f,g,C.u,C.plt/1000)
   :stir?stirP(f,g,C.u):0;
  const chl=chiller(Math.max(Qw,1)+Pp,C.twin,C.tamb);
  const ms=massesCalc(g,fv,pl.m);
@@ -485,7 +504,7 @@ selctl(gT,'tmat','Material',Object.keys(KT));
 const fRow=switchctl(gT,'fins','Annular fins');
 const gC=group(railR,'CIRCULATION',true);
 segctl(gC,'circ','Mode',
- [['thermosiphon','THERM'],['stirred','STIR'],
+ [['thermosiphon','THERM'],['stirred','STIR'],['prop','PROP'],
   ['serpentine','SERP'],['extpump','EXT']],
  ()=>{vis();recalc();});
 const uRow=slider(gC,'u','Velocity',0.005,0.15,0.005,
@@ -607,10 +626,11 @@ document.querySelectorAll('.preset').forEach(b=>{
    setCtl('plt',1.5);setCtl('plc',0.8);
    setCtl('pipeD',19);setCtl('pipeL',2.5);}
   document.querySelectorAll('.seg button').forEach(x=>{
-   if(['THERM','STIR','SERP','EXT'].includes(x.textContent))
+   if(['THERM','STIR','PROP','SERP','EXT'].includes(x.textContent))
     x.classList.toggle('on',
      (x.textContent==='THERM'&&C.circ==='thermosiphon')||
      (x.textContent==='STIR'&&C.circ==='stirred')||
+     (x.textContent==='PROP'&&C.circ==='prop')||
      (x.textContent==='SERP'&&C.circ==='serpentine')||
      (x.textContent==='EXT'&&C.circ==='extpump'));});
   vis();recalc();});});
@@ -662,7 +682,8 @@ function geomDraw(){
  R.serp=(C.circ==='serpentine'||C.circ==='extpump');
  R.unit=bw/R.n;R.cwS=R.unit*0.54;R.plZ=R.unit-R.cwS;
  R.plW=R.plZ*0.62;R.midY=(cTop+cBot)/2;
- R.tr=Math.max(3,Math.min(R.plW*0.46,9));}
+ R.tr=Math.max(3,Math.min(R.plW*0.46,9));
+ R.tY=(cTop-oilTop>26)?(oilTop+cTop)/2:cTop-12;}
 function cellX(i){return R.serp?R.bx+R.unit*i+(R.unit-R.cwS-R.plZ)/2+2
  :R.bx+R.pitch*(0.4+i)+(R.pitch-R.cw)/2;}
 function plateX(i){return cellX(i)+R.cwS+(R.plZ-R.plW)/2;}
@@ -676,6 +697,8 @@ function rrect(x,y,w,h,r,f,s){cx.beginPath();cx.moveTo(x+r,y);
  cx.arcTo(x,y+h,x,y,r);cx.arcTo(x,y,x+w,y,r);cx.closePath();
  if(f)cx.fill();if(s)cx.stroke();}
 function field(px,py){const u=res.ue*1000*4;
+ if(C.circ==='prop')
+  return{vx:Math.sin(px*9+py*3)*1.4,vy:-u*2.6};
  if(R.serp){const l=Math.floor(py*R.n);
   return{vx:(l%2?-1:1)*u*2.4,vy:Math.sin(px*14+l*2)*2.5};}
  const k=C.circ==='stirred'?1:3,A=u*2.2;
@@ -687,7 +710,9 @@ for(let i=0;i<70;i++)watP.push({x:Math.random(),lane:i%14});
 function hitTest(x,y){
  if(R.serp){
   for(let i=0;i<R.n-1;i++){const tcx=plateX(i)+R.plW/2;
-   if(Math.hypot(x-tcx,y-R.midY)<R.tr+6)return 'tubes';}
+   if(Math.hypot(x-tcx,y-R.tY)<R.tr+6)return 'tubes';
+   if(x>=plateX(i)&&x<=plateX(i)+R.plW&&y>=R.tY&&y<=R.cBot)
+    return 'tubes';}
   for(let i=0;i<R.n;i++){const cl=cellX(i);
    if(x>=cl&&x<=cl+R.cwS&&y>=R.cTop&&y<=R.cBot)return 'cells';}
   if(x>R.bx&&x<R.bx+R.bw&&y>R.oilTop&&y<R.by+R.bh)return 'oil';
@@ -824,22 +849,33 @@ function frame(now){try{
   rrect(x,cTop,w,cBot-cTop,5,true,true);
   cx.fillStyle=tcol(res.Tcore,0.95);
   rrect(x+w*0.30,cTop+4,w*0.40,(cBot-cTop)-8,4,true,false);
-  if(serp&&i<n-1){const plx=plateX(i);
+  if(serp&&i<n-1){const plx=plateX(i),tY=R.tY;
    const mg=cx.createLinearGradient(plx,0,plx+plW,0);
    mg.addColorStop(0,'rgba(148,163,184,.5)');
    mg.addColorStop(.5,'rgba(216,224,235,.94)');
    mg.addColorStop(1,'rgba(148,163,184,.5)');
    cx.fillStyle=mg;cx.strokeStyle='rgba(226,232,240,.6)';cx.lineWidth=1;
-   rrect(plx,cTop,plW,cBot-cTop,3,true,true);
+   rrect(plx,tY,plW,cBot-tY,3,true,true);
    const tcx=plx+plW/2;
    cx.strokeStyle='rgba(120,134,158,.85)';cx.lineWidth=1.5;
-   cx.beginPath();cx.moveTo(tcx,cTop+5);cx.lineTo(tcx,cBot-5);cx.stroke();
-   cx.fillStyle='rgba(71,85,105,.96)';
-   cx.beginPath();cx.arc(tcx,midY,tr+1.6,0,6.283);cx.fill();
-   cx.fillStyle=tcol(C.twin+res.dTw*0.5,0.96);
-   cx.beginPath();cx.arc(tcx,midY,tr,0,6.283);cx.fill();
+   cx.beginPath();cx.moveTo(tcx,tY+4);cx.lineTo(tcx,cBot-5);cx.stroke();
+   const wcol=tcol(C.twin+res.dTw*0.5,0.96);
+   if(C.tshape==='square'){
+    cx.fillStyle='rgba(71,85,105,.96)';
+    cx.fillRect(tcx-tr-1.6,tY-tr-1.6,2*tr+3.2,2*tr+3.2);
+    cx.fillStyle=wcol;
+    cx.fillRect(tcx-tr,tY-tr,2*tr,2*tr);}
+   else if(C.tshape==='rect'){const rw=tr*1.3,rh=tr*0.85;
+    cx.fillStyle='rgba(71,85,105,.96)';
+    cx.fillRect(tcx-rw-1.6,tY-rh-1.6,2*rw+3.2,2*rh+3.2);
+    cx.fillStyle=wcol;
+    cx.fillRect(tcx-rw,tY-rh,2*rw,2*rh);}
+   else{cx.fillStyle='rgba(71,85,105,.96)';
+    cx.beginPath();cx.arc(tcx,tY,tr+1.6,0,6.283);cx.fill();
+    cx.fillStyle=wcol;
+    cx.beginPath();cx.arc(tcx,tY,tr,0,6.283);cx.fill();}
    cx.fillStyle='rgba(186,230,253,.75)';
-   cx.beginPath();cx.arc(tcx,midY,tr*0.42,0,6.283);cx.fill();}}
+   cx.beginPath();cx.arc(tcx,tY,tr*0.40,0,6.283);cx.fill();}}
  if(!serp){for(let j=0;j<nt;j++){const tx=bx+tp*(j+1);
   cx.fillStyle='rgba(165,180,204,.4)';
   cx.beginPath();cx.arc(tx,tubeY,11,0,6.283);cx.fill();
@@ -847,7 +883,8 @@ function frame(now){try{
   cx.beginPath();cx.arc(tx,tubeY,5.5,0,6.283);cx.fill();}}
  cx.font='10px Inter';
  if(serp){cx.fillStyle='#93C5FD';
-  cx.fillText('tubes bonded in the plates, running INTO the page  ·  in '+
+  cx.fillText('water tubes in the tube zone ABOVE the cells (into the '+
+   'page) · plates hang from them between the rows · in '+
    C.twin.toFixed(0)+'°C (front) -> '+(C.twin+res.dTw).toFixed(1)+
    '°C (back)',bx+4,by+14);}
  else{cx.fillStyle='#7DD3FC';
@@ -856,16 +893,18 @@ function frame(now){try{
   cx.fillText('out '+(C.twin+res.dTw).toFixed(1)+'°C',bx+bw-64,tubeY-16);}
  for(const p of watP){p.x+=dt*Math.min(C.flow/20,2)*0.25;if(p.x>1)p.x-=1;
   const ang=p.x*6.283;let tx,ty,rr;
-  if(serp){const ln=p.lane%Math.max(n-1,1);tx=plateX(ln)+plW/2;ty=midY;
-   rr=tr*0.6;}
+  if(serp){const ln=p.lane%Math.max(n-1,1);tx=plateX(ln)+plW/2;
+   ty=R.tY;rr=tr*0.6;}
   else{tx=bx+tp*((p.lane%nt)+1);ty=tubeY;rr=3.4;}
   cx.fillStyle=tcol(C.twin+res.dTw*p.x,0.95);
   cx.beginPath();cx.arc(tx+Math.cos(ang)*rr,ty+Math.sin(ang)*rr,
    serp?1.4:1.8,0,6.283);cx.fill();}
  for(const p of oilP){const v=field(p.x,p.y);
   p.x+=v.vx*dt/bw*3.2;p.y+=v.vy*dt/(by+bh-oilTop)*3.2;
-  if(p.x<0.005)p.x=0.005;if(p.x>0.995)p.x=0.995;
-  if(p.y<0.005)p.y=0.005;if(p.y>0.995)p.y=0.995;
+  if(p.x<0.02)p.x=0.98;if(p.x>0.98)p.x=0.02;
+  if(p.y<0.02)p.y=0.02;if(p.y>0.98)p.y=0.98;
+  if(R.serp){const fy0=(cTop-oilTop)/(by+bh-oilTop)+0.02;
+   if(p.y<fy0)p.y=fy0+Math.random()*(0.96-fy0);}
   const px=bx+p.x*bw,py=oilTop+p.y*(by+bh-oilTop);
   cx.fillStyle='rgba(251,191,36,.7)';
   cx.beginPath();cx.arc(px,py,1.7,0,6.283);cx.fill();}
@@ -874,9 +913,9 @@ function frame(now){try{
  cx.lineWidth=2.5;
  if(res.weakRegion==='tubes'){
   if(serp){const ln=Math.floor((n-1)/2),tcx=plateX(ln)+plW/2;
-   cx.beginPath();cx.arc(tcx,midY,tr+7+3*pulse,0,6.283);cx.stroke();
+   cx.beginPath();cx.arc(tcx,R.tY,tr+7+3*pulse,0,6.283);cx.stroke();
    cx.fillStyle='rgba(248,113,113,.95)';cx.font='600 11px Inter';
-   cx.fillText('weakest: '+res.weak,tcx+14,midY-tr-6);}
+   cx.fillText('weakest: '+res.weak,tcx+14,R.tY-tr-8);}
   else{const tx=bx+tp*(Math.floor(nt/2)+1);
    cx.beginPath();cx.arc(tx,tubeY,17+3*pulse,0,6.283);cx.stroke();
    cx.fillStyle='rgba(248,113,113,.95)';cx.font='600 11px Inter';
@@ -886,6 +925,27 @@ function frame(now){try{
    (cBot-cTop)+6+4*pulse,7,false,true);
   cx.fillStyle='rgba(248,113,113,.95)';cx.font='600 11px Inter';
   cx.fillText('weakest: '+res.weak,x+w+10,cTop+14);}
+ if(C.circ==='prop'){
+  const iy=by+bh-11;
+  for(const fxr of [0.3,0.7]){const ixc=bx+bw*fxr;
+   cx.strokeStyle='rgba(148,163,184,.8)';cx.lineWidth=2;
+   cx.beginPath();cx.moveTo(ixc-26,iy+7);cx.lineTo(ixc+26,iy+7);
+   cx.stroke();
+   cx.fillStyle='#0B1220';cx.strokeStyle='#FBBF24';cx.lineWidth=2;
+   cx.beginPath();cx.arc(ixc,iy,9,0,6.283);cx.fill();cx.stroke();
+   const ra=tsec*(3+C.u*50);
+   cx.strokeStyle='rgba(252,211,77,.95)';cx.lineWidth=2.4;
+   for(let k=0;k<3;k++){const a=ra+k*2.094;
+    cx.beginPath();cx.moveTo(ixc,iy);
+    cx.lineTo(ixc+Math.cos(a)*7,iy+Math.sin(a)*3.2);cx.stroke();}
+   for(let k=0;k<3;k++){
+    cx.fillStyle='rgba(251,191,36,'+(0.5-k*0.14)+')';
+    cx.beginPath();
+    cx.moveTo(ixc,iy-12-k*9);
+    cx.lineTo(ixc-5,iy-5-k*9);cx.lineTo(ixc+5,iy-5-k*9);
+    cx.closePath();cx.fill();}}
+  cx.fillStyle='#FCD34D';cx.font='600 9px Inter';
+  cx.fillText('axial impellers push UP, with buoyancy',bx+6,by+bh-20);}
  if(C.circ==='extpump'){
   const yS=by+bh-14,yR=oilTop+16,xw=bx-6,xp2=34,
    pcx=(xw+xp2)/2-4,pcy=(yS+yR)/2,pr=13;

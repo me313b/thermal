@@ -1,6 +1,7 @@
 """pack3d.py - an interactive 3D view of the serpentine plate-channel
 architecture for the cockpit. Cells stand in a grid; a metal cooling
-plate sits in each gap between cell columns; water tubes are bonded along
+plate sits in each gap between cell columns; water tubes run in the tube
+zone above the cells, bonded to the top edge of
 each plate and run front-to-back (into the page); coolant flows
 through-plane, entering the front face and leaving the back, warming as
 it goes. Drag to rotate; the flow animates. Hand-rolled orthographic 3D
@@ -31,7 +32,8 @@ def pack3d_html(p):
   </div>
   <div style="font-size:11.5px;color:#64748b;margin-top:4px">
     Drag to rotate. Cells (amber) sit in a grid; a metal plate (grey)
-    fills each gap; water tubes (blue) run bonded along the plates,
+    fills each gap; water tubes (blue) run in the tube zone above the
+    cells, bonded to the top of the plates,
     <b>into the page</b>; coolant flows front→back and warms as it
     collects heat. This is the through-plane path a flat 2D view cannot
     show.
@@ -82,15 +84,20 @@ def pack3d_html(p):
      prim.push({t:'cell',a:top,b:bot,r:R*scale,
                 d:(top.d+bot.d)/2, f:fcell, x:x});
    }
-   // plates in the gaps between columns (nx-1 of them), y-z sheets
+   // plates in the gaps between columns (nx-1 of them), y-z sheets;
+   // they hang DOWN from the water tubes, so the sheet runs from the
+   // cell bottom up into the tube zone above the cells
+   const zTube0=cz0+Hc+tod*0.9;      // tube zone: just above the cells
    for(let i=0;i<nx-1;i++){
      const xg=cx0+(i+0.5)*pitch_mm + (ex? (i-(nx-2)/2)*ex*8:0);
+     const zPl=zTube0+(ntz-1)*tod*1.5;
      const c=[rot(xg,cy0,cz0),rot(xg,cy0+depth,cz0),
-              rot(xg,cy0+depth,cz0+Hc),rot(xg,cy0,cz0+Hc)];
+              rot(xg,cy0+depth,zPl),rot(xg,cy0,zPl)];
      prim.push({t:'plate',c:c,d:(c[0].d+c[2].d)/2});
-     // tubes bonded along this plate, running in y (into page)
+     // tubes in the tube zone ABOVE the cells, bonded to the top of
+     // this plate, running in y (into page)
      for(let k=0;k<ntz;k++){
-       const zt=cz0+Hc*(k+1)/(ntz+1);
+       const zt=zTube0+k*tod*1.5;
        const fr=rot(xg,cy0,zt), bk=rot(xg,cy0+depth,zt);
        prim.push({t:'tube',a:fr,b:bk,r:(tod/2)*scale,
                   d:(fr.d+bk.d)/2, xg:xg, zt:zt});

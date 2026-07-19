@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.1"
+APP_VERSION = "v10.2"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -149,7 +149,15 @@ def gap_factor(gap_mm: float, expo: float = 0.6, floor: float = 0.35) -> float:
         return 1.0
     return max(floor, (max(gap_mm, 0.3) / 6.0) ** expo)
 
-def h_cell_side(fl, T_s, T_bulk, H_cell, D_cell, gap_mm, u_oil) -> dict:
+def h_cell_side(fl, T_s, T_bulk, H_cell, D_cell, gap_mm, u_oil,
+                axial=False) -> dict:
+    """Oil film on the can wall. Forced term: Churchill-Bernstein
+    crossflow for horizontal sweeps (stirred / serpentine channels), or
+    a laminar flat-plate boundary layer along the can height for AXIAL
+    upward flow (bottom propeller) - at equal velocity axial flow gives
+    a thinner-growing but longer boundary layer and a LOWER film than
+    crossflow. Assisting buoyancy is captured by the cube-root blend
+    with the natural-convection term."""
     p = film_props(fl, 0.5 * (T_s + T_bulk))
     Ra = rayleigh(p, T_s - T_bulk, H_cell)
     Nun = nu_vertical_cc(Ra, p["Pr"]) * gap_factor(gap_mm)
@@ -157,7 +165,12 @@ def h_cell_side(fl, T_s, T_bulk, H_cell, D_cell, gap_mm, u_oil) -> dict:
     h_f = 0.0
     Re = u_oil * D_cell / p["nu"]
     if u_oil > 1e-6:
-        h_f = nu_crossflow_cb(Re, p["Pr"]) * p["k"] / D_cell
+        if axial:
+            Re_L = u_oil * H_cell / p["nu"]
+            h_f = (0.664 * math.sqrt(max(Re_L, 1.0))
+                   * p["Pr"] ** (1.0 / 3.0)) * p["k"] / H_cell
+        else:
+            h_f = nu_crossflow_cb(Re, p["Pr"]) * p["k"] / D_cell
     return dict(h=blend_mixed(h_n, h_f), h_nat=h_n, h_for=h_f,
                 Ra=Ra, Re=Re, Pr=p["Pr"])
 
@@ -405,7 +418,8 @@ def solve_steady(d, g, fl, Q_total, T_amb, C_rate=None) -> dict:
         u_ts, dT_loop = thermosiphon_u(d, g, fl, max(Q_total, 1.0),
                                        0.5 * (T_b + T_il))
         u_eff = max(d["u_oil"], u_ts)
-        cell = h_cell_side(fl, T_b, T_il, d["h_cell"], d["d_cell"], g["gap_mm"], u_eff)
+        cell = h_cell_side(fl, T_b, T_il, d["h_cell"], d["d_cell"], g["gap_mm"], u_eff,
+                           axial=d.get("circ", "").startswith("Bottom"))
         tube0 = h_tube_side(fl, T_il, T_wall, d["tube_od"], u_eff)
         for hh in (cell, tube0):
             hh["h"] *= ch; hh["h_nat"] *= ch; hh["h_for"] *= ch
@@ -575,7 +589,8 @@ def solve_transient(d, g, fl, masses, T_amb, t_arr, C_arr) -> dict:
         Q = q_gen_per_cell(d, C_arr[i - 1], T_b[i - 1]) * g["N"]
         u_ts, _ = thermosiphon_u(d, g, fl, max(Q, 1.0), 0.5 * (T_b[i-1] + T_il[i-1]))
         u_eff = max(d["u_oil"], u_ts)
-        cell = h_cell_side(fl, T_b[i-1], T_il[i-1], d["h_cell"], d["d_cell"], g["gap_mm"], u_eff)
+        cell = h_cell_side(fl, T_b[i-1], T_il[i-1], d["h_cell"], d["d_cell"], g["gap_mm"], u_eff,
+                           axial=d.get("circ", "").startswith("Bottom"))
         T_wall_est = T_il[i-1] - 0.6 * (T_il[i-1] - d["T_water_in"])
         tub = h_tube_side(fl, T_il[i-1], T_wall_est, d["tube_od"], u_eff)
         R_b = 1.0 / max(ch * cell["h"] * g["A_cells"], 1e-9)
@@ -978,6 +993,22 @@ def stirrer_power(d, g, fl, u, T_oil=35.0) -> float:
     dp = 32.0 * p["rho"] * p["nu"] * (2.2 * g["fill_h"]) * u / g["D_h"] ** 2 \
          + d.get("K_loop", 5.0) * 0.5 * p["rho"] * u ** 2
     return dp * (u * g["A_flow"]) / 0.30
+
+def prop_power(d, g, fl, u, T_oil=35.0):
+    """Bottom propeller pushing the oil UP through the row semi-channels
+    (aligned with buoyancy). Head = laminar bank friction over the cell
+    height on the array's hydraulic diameter, plus turning/grid losses;
+    flow = u times the free riser area. Small shrouded axial impellers
+    run ~30% wire-to-fluid, like the stirrer."""
+    if u <= 1e-6:
+        return dict(P=0.0, dp=0.0, Vdot_lpm=0.0)
+    p = film_props(fl, T_oil)
+    Re = u * g["D_h"] / p["nu"]
+    f = 64.0 / max(Re, 1.0) if Re < 2300 else 0.316 * Re ** -0.25
+    dp = ((f * d["h_cell"] / g["D_h"] + 2.0) * 0.5 * p["rho"] * u ** 2)
+    Vdot = u * g["A_flow"]
+    return dict(P=dp * Vdot / 0.30, dp=dp, Vdot_lpm=Vdot * 60000.0)
+
 
 def plate_fin_area(d, g, h_oil):
     """Effective wetted area of thin plates hung from the tubes between cell
@@ -1958,6 +1989,7 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop, Q_duty, chil):
 | Magnetic stirrer | sealed impeller in the bulk | ~1-3 W | no - bypasses the gaps | cheapest forced option |
 | Pump + jet manifold | nozzles along a wall | ~2-5 W | partially | directional; nozzle fouling |
 | **Serpentine plates (guided)** | plates form parallel channels; small pump | **~0.5 W at 5 cm/s** | **yes - every gap** | plates double as fins; needs a manifold |
+| **Bottom propeller (axial, up)** | shrouded impeller under the array pushes the oil straight up, with buoyancy | ~0.5-3 W | yes - every riser gap | axial flow gives a weaker film than a crossflow sweep at the same speed; no plate area |
 | **External pump loop (closed)** | oil out to a pump and straight back - no external HX; the internal water tubes still reject the heat | ~3-30 W (the pipes dominate) | yes - drives the same channels | pump serviceable without opening the pack; oil and water never meet |
 | Full pumped immersion | external HX loop | 20+ W | yes | the AMG HPB80 architecture |
 
@@ -2053,6 +2085,12 @@ def system_tab(d, g, fl, res, masses, loop, chil, Q_duty, C_steady):
         oil_mode = ("external pump loop"
                     + (" + serpentine plates" if d.get("plate_on") else
                        " (row channels)"))
+    elif d["circ"].startswith("Bottom"):
+        u_oil = d["u_oil"]
+        _pp = prop_power(d, g, fl, u_oil)
+        P_oil = _pp["P"]
+        oil_mode = (f"bottom propeller, axial up "
+                    f"({_pp['Vdot_lpm']:.0f} L/min swept)")
     elif d.get("plate_on"):
         u_oil = d.get("u_guided", 0.05)
         P_oil = serpentine_pump(d, g, fl, u_oil)["P"]
@@ -2184,6 +2222,12 @@ def system_tab(d, g, fl, res, masses, loop, chil, Q_duty, C_steady):
          "conduction fin + tube carrier"),
         ("Water circulator / pump", f"{P_pump_w:.0f} W, {head_m:.1f} m",
          1, pump_gbp, 0.4, "brushless, sealed"),
+        ("Axial propeller + shroud + motor",
+         (f"{P_oil:.1f} W el" if d["circ"].startswith("Bottom") else
+          "n/a"), 1 if d["circ"].startswith("Bottom") else 0,
+         (28.0 + P_oil * 1.2) if d["circ"].startswith("Bottom") else 0.0,
+         0.6 if d["circ"].startswith("Bottom") else 0.0,
+         "under the array, pushes the oil up with buoyancy"),
         ("External oil pump", (f"{P_oil:.0f} W, "
          f"{xp['dp']/1000:.1f} kPa, {xp['Vdot_lpm']:.0f} L/min"
          if xp else "n/a"), 1 if ext else 0,
@@ -2808,6 +2852,17 @@ def smoke():
     assert xp1["dp_pipe"] > xp1["dp_pack"],         "at 19 mm the pipes should dominate the pack channels"
     print(f"tube shapes: square/rect solve; ext loop 19mm {xp1['P']:.1f} W"
           f" -> 32mm {xp2['P']:.1f} W ({xp1['Vdot_lpm']:.0f} L/min)")
+    dp_ = dict(d, circ="Bottom propeller (axial, up)", u_oil=0.05)
+    rp_ = solve_steady(dp_, g, fl, 1.0, d["T_amb"], C_rate=d["C1"])
+    rs_ = solve_steady(dict(d, circ="Open stirring", u_oil=0.05), g, fl,
+                       1.0, d["T_amb"], C_rate=d["C1"])
+    pp_ = prop_power(dp_, g, fl, 0.05)
+    assert rp_["T_b"] < res["T_b"] - 1.0, "propeller must beat passive"
+    assert rp_["T_b"] > rs_["T_b"] + 0.3,         "axial film must be weaker than crossflow at the same u"
+    assert 0 < pp_["P"] < 20
+    print(f"propeller: axial T_b {rp_['T_b']:.1f} vs crossflow "
+          f"{rs_['T_b']:.1f} °C at 5 cm/s; P {pp_['P']:.2f} W "
+          f"({pp_['Vdot_lpm']:.0f} L/min swept)")
     fc = thermal_circuit_fig(d, g, fl, res, res["Q_eff"])
     assert len(fc.layout.shapes) >= 6
     nu_T_fig(fl)
@@ -3030,7 +3085,8 @@ def simulate_pack(d, g, fl, masses, T_amb, spec) -> dict:
         # --- thermal step (v2 core) ---
         u_ts, _ = thermosiphon_u(d, g, fl, max(Q, 1.0), 0.5 * (Tb + T_il[i-1]))
         u_eff = max(d["u_oil"], u_ts)
-        cellf = h_cell_side(fl, Tb, T_il[i-1], d["h_cell"], d["d_cell"], g["gap_mm"], u_eff)
+        cellf = h_cell_side(fl, Tb, T_il[i-1], d["h_cell"], d["d_cell"], g["gap_mm"], u_eff,
+                            axial=d.get("circ", "").startswith("Bottom"))
         T_wall_est = T_il[i-1] - 0.6 * (T_il[i-1] - d["T_water_in"])
         tubf = h_tube_side(fl, T_il[i-1], T_wall_est, d["tube_od"], u_eff)
         R_b = 1.0 / max(ch * cellf["h"] * g["A_cells"], 1e-9)
@@ -3458,7 +3514,8 @@ def design_inputs(cool_df) -> dict:
                        "Thermosiphon only",
                        options=["Thermosiphon only", "Open stirring",
                                 "Serpentine plates (guided)",
-                                "External pump loop (closed)"],
+                                "External pump loop (closed)",
+                                "Bottom propeller (axial, up)"],
                        help="Realistic options are compared in Learn and "
                             "Ideas. The external pump keeps the dielectric "
                             "in a closed loop through an outside pump - no "
@@ -3471,6 +3528,18 @@ def design_inputs(cool_df) -> dict:
         if d["circ"] == "Open stirring":
             d["u_oil"] = _w(st.slider, "Stirring velocity [m/s]", "uoil", 0.0,
                             min_value=0.0, max_value=0.20, step=0.005)
+        if d["circ"].startswith("Bottom"):
+            d["u_oil"] = _w(st.slider, "Upward velocity through the "
+                            "array [m/s]", "upr", 0.05, min_value=0.0,
+                            max_value=0.15, step=0.005,
+                            help="A shrouded axial impeller under the "
+                                 "array pushes the oil straight up, "
+                                 "aligned with buoyancy. The film uses "
+                                 "the AXIAL flat-plate correlation "
+                                 "along the can, not crossflow - at "
+                                 "equal velocity that is a weaker film "
+                                 "than a horizontal sweep, which the "
+                                 "solver shows honestly.")
         if _ext:
             d["u_loop"] = _w(st.slider, "Loop velocity through the pack "
                              "[m/s]", "ulp", 0.05, min_value=0.0,
@@ -3720,6 +3789,10 @@ def main():
         _xp = ext_loop_pump(d, g, fl, d["u_oil"])
         P_stir = _xp["P"]
         res["ext"] = _xp
+    elif d["circ"].startswith("Bottom"):
+        _pp = prop_power(d, g, fl, d["u_oil"])
+        P_stir = _pp["P"]
+        res["prop"] = _pp
     elif d.get("plate_on"):
         _sp = serpentine_pump(d, g, fl, d["u_oil"])
         P_stir = _sp["P"]
@@ -4114,6 +4187,7 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                         pipe_id=d.get("pipe_id", 0.019),
                         pipe_len=d.get("pipe_len", 2.5),
                         circ0=("extpump" if d["circ"].startswith("External")
+                               else "prop" if d["circ"].startswith("Bottom")
                                else "serpentine" if d.get("plate_on") else
                                "stirred" if d["u_oil"] > 0 else
                                "thermosiphon"),
@@ -4242,7 +4316,9 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                                 "serpentine":
                                 "Serpentine plates (guided)",
                                 "extpump":
-                                "External pump loop (closed)"}
+                                "External pump loop (closed)",
+                                "prop":
+                                "Bottom propeller (axial, up)"}
                     if "tshape" in j:
                         pen["w_tshape"] = {"round": "Round",
                                            "squar": "Square",
@@ -4253,6 +4329,8 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                                                      "Thermosiphon only")
                         if j["circ"] == "extpump" and "u" in j:
                             pen["w_ulp"] = float(j["u"])
+                        elif j["circ"] == "prop" and "u" in j:
+                            pen["w_upr"] = float(j["u"])
                         elif j["circ"] == "serpentine" and "u" in j:
                             pen["w_ugd"] = float(j["u"])
                         elif j["circ"] == "stirred" and "u" in j:

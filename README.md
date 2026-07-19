@@ -587,6 +587,14 @@ thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
 
+## v10.2
+
+The tubes-on-top correction, a real runtime bug, and the propeller question.
+
+- **Cockpit 2D and 3D drawings corrected.** The model has always put the water tubes in the tube zone ABOVE the cells with the plates hanging down from them (`build_geometry`, `plate_fin_area`); the v9.8 drawing wrongly embedded the tubes at plate mid-height. Both views now show tubes on top (drawn round, square or rectangular to match the selected section), plates reaching up to them, hit-testing and the weakest-link ring following, and the oil particles confined to the channels instead of drifting into the headspace.
+- **EXT mode runtime crash fixed.** The cockpit called `extP()` but an earlier patch never persisted its definition, so clicking EXT in a browser would throw a ReferenceError. `extP` is now defined, and the build gains a defined-function audit alongside the node syntax check because `node --check` cannot catch undefined identifiers.
+- **New circulation mode: Bottom propeller (axial, up).** A shrouded impeller under the array pushes the oil straight up, aligned with buoyancy. Modelled honestly: the can film uses a laminar flat-plate boundary layer along the cell height (axial flow), not Churchill-Bernstein crossflow, so at the same 5 cm/s the film is ~230 vs ~135 W/m2K and the pack lands at 38.4 degC against 37.5 for a horizontal sweep and 32.8 for serpentine plates with a full tube count. Propeller power is head times swept flow at 30% wire-to-fluid (about 0.2 W at 5 cm/s, 992 L/min swept - several impellers or a plenum in practice). Wired through the solver, Design tab, System sizing and BOM, Learn table, and the cockpit (PROP mode with animated impellers and an upward particle field).
+
 ## v10.1
 
 - The Word / PowerPoint / PDF export now sits directly on the Report tab as a visible row (checkbox, Build button, then three download buttons), rather than inside a popover - features stay visible by default. Verified end to end inside the running app.
