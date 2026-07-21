@@ -468,15 +468,29 @@ def _j_params(d):
     return out
 
 
-def _j_tail(cls, evals):
-    """evals: list of (label_expr_unit tuples) -> EvalGlobal rows."""
+def _j_tail(cls, evals, sweep=None):
+    """evals: (expr, unit, description) rows for the EvalGlobal.
+    sweep: optional (param, values) -> a ready-made Parametric study
+    block, shipped commented out so the base run stays fast."""
+    sw = ""
+    if sweep:
+        p, vals = sweep
+        sw = (f"    // Parametric sweep over {p} - uncomment to use\n"
+              f"    // (COMSOL then tabulates every eval row per "
+              f"value):\n"
+              f'    // model.study("std1").create("prm", '
+              f'"Parametric");\n'
+              f'    // model.study("std1").feature("prm").set("pname",'
+              f' new String[]{{"{p}"}});\n'
+              f'    // model.study("std1").feature("prm").set('
+              f'"plistarr", new String[]{{"{vals}"}});\n')
     exprs = ", ".join(f'"{e}"' for e, _, _ in evals)
     units = ", ".join(f'"{u}"' for _, u, _ in evals)
     descs = ", ".join(f'"{d_}"' for _, _, d_ in evals)
     return f"""
     model.study().create("std1");
     model.study("std1").create("stat", "Stationary");
-    model.study("std1").run();
+{sw}    model.study("std1").run();
 
     model.result().numerical().create("gev1", "EvalGlobal");
     model.result().numerical("gev1").set("expr",
@@ -627,7 +641,7 @@ def comsol_cell_axi(P):
              ("aveop1(T)", "degC", "FEA can surface mean"),
              ("T_s_app", "degC", "app can surface"),
              ("aveop1(T)-T_s_app", "K", "delta surface")]
-    s += _j_tail(cls, evals)
+    s += _j_tail(cls, evals, sweep=("h_side", "60 90 120 150 200"))
     return s
 
 
@@ -828,7 +842,9 @@ def comsol_plate_2d(P, with_cell=False, extra=None):
                   ("aveS(T)-T_s_app", "K", "delta surface"),
                   ("T_core_app", "degC", "app core peak"),
                   ("maxop1(T)-T_core_app", "K", "delta core")]
-    s += _j_tail(cls, evals)
+    s += _j_tail(cls, evals,
+                 sweep=("h_cell" if with_cell else "h_oil",
+                        "40 60 90 120 180"))
     return s
 
 
@@ -915,5 +931,5 @@ def comsol_fin_axi(P):
     evals = [("intB(ht.ntflux)", "W", "FEA heat to water (half "
                                       "pitch, axisym)"),
              ("eta_app", "1", "app fin efficiency for comparison")]
-    s += _j_tail(cls, evals)
+    s += _j_tail(cls, evals, sweep=("h_oil", "40 60 90 120 180"))
     return s

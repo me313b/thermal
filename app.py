@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.5"
+APP_VERSION = "v10.6"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -2789,14 +2789,20 @@ def fea_tab(d, g, fl, cool_df, loop):
         fn = "ipl_case4_unit"
 
     cdl1, cdl2 = st.columns(2)
-    cdl1.download_button(f"FEMM script ({fn}.lua)", data=lua,
+    cdl1.download_button(f"COMSOL model file ({fn}.java)", data=jav,
+                         file_name=f"{fn}.java", mime="text/plain",
+                         use_container_width=True, type="primary",
+                         key=f"fx_dl_jav_{fn}")
+    cdl2.download_button(f"FEMM cross-check ({fn}.lua)", data=lua,
                          file_name=f"{fn}.lua", mime="text/plain",
                          use_container_width=True,
                          key=f"fx_dl_lua_{fn}")
-    cdl2.download_button(f"COMSOL model file ({fn}.java)", data=jav,
-                         file_name=f"{fn}.java", mime="text/plain",
-                         use_container_width=True,
-                         key=f"fx_dl_jav_{fn}")
+    st.caption("COMSOL is the primary target: run with "
+               f"`comsolbatch -inputfile {fn}.java` (it compiles, "
+               "solves, writes the results table and saves an .mph "
+               "for the Desktop; a ready-made parametric sweep is "
+               "included, commented, at the study). FEMM is the "
+               "free cross-check of the same geometry.")
 
 
 def system_tab(d, g, fl, res, masses, loop, chil, Q_duty, C_steady):
