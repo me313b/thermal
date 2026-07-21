@@ -891,6 +891,10 @@ function frame(now){try{
   cx.fillText('in '+C.twin.toFixed(0)+'°C',bx+4,tubeY-16);
   cx.fillStyle=tcol(C.twin+res.dTw,1);
   cx.fillText('out '+(C.twin+res.dTw).toFixed(1)+'°C',bx+bw-64,tubeY-16);}
+ cx.fillStyle='rgba(148,163,184,.9)';cx.font='600 9px Inter';
+ cx.textAlign='right';
+ cx.fillText('IPL '+(D.ver||'dev'),bx+bw-4,by+bh+12);
+ cx.textAlign='left';
  for(const p of watP){p.x+=dt*Math.min(C.flow/20,2)*0.25;if(p.x>1)p.x-=1;
   const ang=p.x*6.283;let tx,ty,rr;
   if(serp){const ln=p.lane%Math.max(n-1,1);tx=plateX(ln)+plW/2;

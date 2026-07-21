@@ -587,6 +587,22 @@ thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
 
+## v10.4
+
+The verification ladder, answering "the model is getting hard to validate".
+
+- **New Cases tab** (between Learn and Validate): six small cases, each hand-checkable and fully adjustable, each calling the SAME functions the full model uses - so agreement validates the model's building blocks, not a re-implementation. Case 1: one heated cylinder in a still bath (maps directly onto a cartridge-heater bench experiment; enter a measured temperature and see the error against the correlation band). Case 2: the same cylinder in moving oil, crossflow vs axial side by side. Case 3: sealed-bath warm-up - steady level and time constant closed-form. Case 4: one cell to one water tube, the solver's spine in isolation, with fins and a single bonded plate as toggles and every resistance printed so the ladder sums by hand. Case 5: circulation shoot-out at equal velocity (thermosiphon / axial propeller / crossflow). Case 6: decomposition of the CURRENT full design - the solver's own resistances times the heat to water must sum to its reported temperature gap; the residual shown is the bisection tolerance.
+- Smoke now asserts the ladder: case-1 energy closure, cross > axial > still film ordering, the closed-form bath steady state, case-4 ladder closure, and that a bonded plate lowers the oil temperature (this last one caught a real slip - plate_fin_area silently returns zero without plate_on).
+- **render_cockpit.py** ships with the bundle: renders the cockpit canvas to PNG by executing its JavaScript in node with node-canvas, for pixel-level review without a browser (needs node plus the npm canvas package; optional).
+
+## v10.3
+
+Build identification and a JS runtime test, prompted by a stale-deployment episode.
+
+- **Version badge on the cockpit canvas.** The canvas now draws "IPL v10.3" bottom-right, fed from the payload, so any screenshot self-identifies its build. The v10.2 tubes-on-top drawing was correct in the shipped zip; the screenshot that looked wrong contained a label string that no longer exists in the code, i.e. an older build was still running. Note for deployment: Streamlit does not reliably hot-reload changed imported modules such as cockpit.py - stop the process, replace the folder, start it again, and hard-refresh the browser.
+- **js_runtime_check.py.** node --check only parses; this harness actually executes the cockpit script in node against a stub DOM - init, a recalc and three animation frames - for every circulation mode (thermosiphon, stirred, propeller, serpentine, external pump) and tube shape (round, square, rectangular), with the component's internal try/catch converted to re-throws so failures exit non-zero. A negative test recreates the earlier missing-extP bug and confirms the harness catches it. Needs node and a payload dump: CP_DUMP=1 SMOKE=1 python app.py, then python js_runtime_check.py.
+- The smoke cockpit payload is now a named dict with a CP_DUMP hook for the harness.
+
 ## v10.2
 
 The tubes-on-top correction, a real runtime bug, and the propeller question.

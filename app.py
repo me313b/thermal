@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.2"
+APP_VERSION = "v10.4"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -1545,6 +1545,134 @@ def learn_convection_html(k_oil, dT):
 """.replace("__KOIL__", f"{k_oil:.3f}").replace("__DT__", f"{dT:.1f}")
 
 
+
+# ------------------------------------------------------------------ #
+#  Cases tab - a verification ladder of small, hand-checkable cases  #
+#  Every case calls the SAME functions the full model uses.          #
+# ------------------------------------------------------------------ #
+def case_still_bath(fl, Q, D, H, T_bath, f_ends=0.0, gap_mm=50.0):
+    """One heated cylinder in a large still bath: bisect the surface
+    temperature until Q = h(T_s) * A * (T_s - T_bath), with h from the
+    model's own h_cell_side (Churchill-Chu vertical wall + gap factor,
+    zero velocity)."""
+    A = math.pi * D * H + f_ends * 2 * math.pi * D ** 2 / 4
+    lo, hi = T_bath + 0.01, T_bath + 200.0
+    film = None
+    for _ in range(80):
+        Ts = 0.5 * (lo + hi)
+        film = h_cell_side(fl, Ts, T_bath, H, D, gap_mm, 0.0)
+        if film["h"] * A * (Ts - T_bath) > Q:
+            hi = Ts
+        else:
+            lo = Ts
+    Ts = 0.5 * (lo + hi)
+    film = h_cell_side(fl, Ts, T_bath, H, D, gap_mm, 0.0)
+    resid = film["h"] * A * (Ts - T_bath) - Q
+    return dict(T_s=Ts, h=film["h"], Ra=film["Ra"], Pr=film["Pr"],
+                A=A, dT=Ts - T_bath, resid=resid,
+                gapf=gap_factor(gap_mm))
+
+
+def case_mode_temp(fl, Q, D, H, T_bath, u, mode, f_ends=0.0,
+                   gap_mm=50.0):
+    """Same cylinder with moving oil. mode: 'still' | 'cross' |
+    'axial'. Uses h_cell_side exactly as the full solver does."""
+    A = math.pi * D * H + f_ends * 2 * math.pi * D ** 2 / 4
+    ax = (mode == "axial")
+    uu = 0.0 if mode == "still" else u
+    lo, hi = T_bath + 0.01, T_bath + 200.0
+    for _ in range(80):
+        Ts = 0.5 * (lo + hi)
+        film = h_cell_side(fl, Ts, T_bath, H, D, gap_mm, uu, axial=ax)
+        if film["h"] * A * (Ts - T_bath) > Q:
+            hi = Ts
+        else:
+            lo = Ts
+    Ts = 0.5 * (lo + hi)
+    film = h_cell_side(fl, Ts, T_bath, H, D, gap_mm, uu, axial=ax)
+    return dict(T_s=Ts, dT=Ts - T_bath, **{k: film[k] for k in
+                ("h", "h_nat", "h_for", "Ra", "Re")}, A=A)
+
+
+def case_bath_warmup(fl, N, Q, V_L, U_ext, A_ext, T_amb, t_end_min):
+    """Sealed bath with no water sink: m cp dT/dt = N Q - U A (T-Tamb).
+    Explicit Euler on the single-node balance the transient solver
+    integrates; the steady state and time constant are closed-form."""
+    m = V_L / 1000.0 * fl["rho"]
+    C = m * fl["cp"]
+    UA = U_ext * A_ext
+    T_ss = T_amb + N * Q / max(UA, 1e-9)
+    tau = C / max(UA, 1e-9)
+    n = 400
+    dt = t_end_min * 60.0 / n
+    T = T_amb
+    ts, Ts = [0.0], [T]
+    for i in range(n):
+        T += dt * (N * Q - UA * (T - T_amb)) / C
+        ts.append((i + 1) * dt / 60.0)
+        Ts.append(T)
+    return dict(t_min=ts, T=Ts, T_ss=T_ss, tau_min=tau / 60.0,
+                C_kJK=C / 1000.0, UA=UA, m=m)
+
+
+def case_chain(fl, loop, Q, D, H, T_w_in, mdot_lpm, td, u=0.0,
+               mode="still", fins=False, fin_geo=None, plate=None,
+               f_ends=0.0):
+    """One cell -> well-mixed oil -> ONE water tube. Solves the oil
+    temperature from Q = (T_oil - T_w_mean) / (R_ot + R_wall + R_in)
+    using h_tube_side, tube_section and h_water_inside - the exact
+    chain inside solve_steady - then the can temperature from the
+    cell-side film. Returns every resistance so the ladder can be
+    summed by hand."""
+    ts_ = tube_section(td)
+    L_t = td["L_tube_case"]
+    mdot = mdot_lpm / 60.0 * loop["rho"] / 1000.0
+    T_w = T_w_in + Q / max(2.0 * mdot * loop["cp"], 1e-9)
+    wat = h_water_inside(loop, mdot, ts_["D_h"], L_t,
+                         lam_nu=ts_["lam_nu"], P_wet=ts_["P_in"])
+    R_in = 1.0 / max(wat["h"] * ts_["P_in"] * L_t, 1e-12)
+    if ts_["shape"] == "Round":
+        R_wall = math.log(td["tube_od"] / ts_["D_h"]) / (
+            2 * math.pi * K_TUBE[td["tube_mat"]] * L_t)
+    else:
+        P_m = 0.5 * (ts_["P_in"] + ts_["P_out"])
+        R_wall = ts_["t"] / (K_TUBE[td["tube_mat"]] * P_m * L_t)
+    lo, hi = T_w + 0.01, T_w + 150.0
+    tube = None
+    A_o = A_fin = A_pl = eta_f = eta_p = 0.0
+    for _ in range(80):
+        T_oil = 0.5 * (lo + hi)
+        T_wall_est = T_w + Q * (R_in + R_wall)
+        tube = h_tube_side(fl, T_oil, T_wall_est, td["tube_od"], u)
+        A_o = ts_["P_out"] * L_t
+        A_fin = eta_f = 0.0
+        if fins and fin_geo and ts_["shape"] == "Round":
+            fp = fin_pack(td["tube_od"], fin_geo["H"], fin_geo["t"],
+                          fin_geo["p"], fin_geo["k"], tube["h"])
+            A_fin = fp["A_eff_per_m"] * L_t - A_o
+            eta_f = fp["eta"]
+        A_pl = eta_p = 0.0
+        if plate:
+            A_pl, eta_p, _m = plate_fin_area(plate["d"], plate["g"],
+                                             tube["h"])
+        A_eff = A_o + max(A_fin, 0.0) + A_pl
+        R_ot = 1.0 / max(tube["h"] * A_eff, 1e-12)
+        if (T_oil - T_w) / (R_ot + R_wall + R_in) > Q:
+            hi = T_oil
+        else:
+            lo = T_oil
+    T_oil = 0.5 * (lo + hi)
+    R_ot = 1.0 / max(tube["h"] * (A_o + max(A_fin, 0) + A_pl), 1e-12)
+    cellc = case_mode_temp(fl, Q, D, H, T_oil, u, mode, f_ends)
+    return dict(T_oil=T_oil, T_w_mean=T_w, T_s=cellc["T_s"],
+                h_cell=cellc["h"], h_tube=tube["h"], h_water=wat["h"],
+                regime=wat["regime"], Re_w=wat["Re"],
+                R_ot=R_ot, R_wall=R_wall, R_in=R_in,
+                A_o=A_o, A_fin=A_fin, A_pl=A_pl, eta_f=eta_f,
+                eta_p=eta_p, ts=ts_, dT_w=Q / max(mdot * loop["cp"],
+                                                  1e-9))
+
+
 def learn_tab(d, g, fl, res, masses, cool_df, loop, Q_duty, chil):
     ACC = "#6366F1"
     st.markdown(
@@ -2005,6 +2133,329 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop, Q_duty, chil):
 **Sources**: Wang et al. 2023 (J. Energy Storage 62, 106821); Zou et al. 2024 (J. Energy Storage 83, 110634); Roe et al. 2022 (J. Power Sources 525, 231094); batterydesign.net.
 
 *A note on units: temperature **differences** are written in °C here; a difference of 1 K and 1 °C are identical in size, only the zero points of the two scales differ.*""")
+
+
+
+def cases_tab(d, g, fl, res, cool_df, loop):
+    st.markdown("#### The verification ladder")
+    st.markdown(
+        "Six small cases, each simple enough to check by hand, an "
+        "experiment, or a textbook, each adding one physical effect. "
+        "Every case calls the **same functions the full model uses** - "
+        "`h_cell_side`, `h_tube_side`, `h_water_inside`, `fin_pack`, "
+        "`plate_fin_area` - so agreement here IS validation of the "
+        "model's building blocks, not of a copy. Adjust everything; "
+        "the numbers below update live.")
+    cs_fl_name = st.selectbox(
+        "Coolant for the cases", list(cool_df["name"]),
+        index=int((cool_df["name"] == d["coolant"]).idxmax()),
+        key="cs_fluid")
+    cfl = fluid_dict(cool_df[cool_df["name"] == cs_fl_name].iloc[0])
+    case = st.radio(
+        "Case", ["1 · One cell, still bath",
+                 "2 · One cell, moving oil",
+                 "3 · Sealed bath warm-up",
+                 "4 · One cell to one water tube",
+                 "5 · Circulation shoot-out",
+                 "6 · Reconcile the full model"],
+        horizontal=True, key="cs_case")
+
+    # ---------------------------------------------------------- 1
+    if case.startswith("1"):
+        st.markdown(
+            "**A single heated cylinder hangs in a large, still bath.** "
+            "This is the base experiment - a cartridge-heated cylinder "
+            "and a thermocouple reproduce it on a bench in an "
+            "afternoon. The film is natural convection only.")
+        c1, c2, c3, c4 = st.columns(4)
+        Q = c1.slider("Heat in the cell [W]", 0.5, 40.0, 3.0, 0.5,
+                      key="cs1_q")
+        Dm = c2.slider("Diameter [mm]", 10.0, 80.0, 21.0, 0.5,
+                       key="cs1_d") / 1000
+        Hm = c3.slider("Height [mm]", 30.0, 300.0, 70.0, 5.0,
+                       key="cs1_h") / 1000
+        Tb = c4.slider("Bath temperature [°C]", 15.0, 60.0, 35.0, 1.0,
+                       key="cs1_tb")
+        r = case_still_bath(cfl, Q, Dm, Hm, Tb)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Surface temperature", f"{r['T_s']:.1f} °C")
+        m2.metric("Film ΔT", f"{r['dT']:.1f} °C")
+        m3.metric("h (natural)", f"{r['h']:.0f} W/m²·K")
+        m4.metric("Rayleigh", f"{r['Ra']:.2e}")
+        st.markdown("**The numbers, step by step**")
+        st.markdown(
+            "Area $A = \\pi D H$ = %.4f m². Churchill-Chu on a "
+            "vertical wall gives $Nu(Ra=%.2e, Pr=%.0f)$, so "
+            "$h = %.1f$ W/m²·K (gap factor %.2f, i.e. unconfined). "
+            "The energy balance $Q = h A (T_s - T_\\infty)$ closes to "
+            "%.4f W against the %.1f W input - the bisection residual "
+            "is %.2e W. Check any line against Incropera table 9.x by "
+            "hand." % (r["A"], r["Ra"], r["Pr"], r["h"], r["gapf"],
+                       r["h"] * r["A"] * r["dT"], Q, r["resid"]))
+        meas = st.number_input(
+            "Measured surface temperature from your rig [°C] "
+            "(0 = none)", 0.0, 250.0, 0.0, 0.1, key="cs1_meas")
+        if meas > 0:
+            err = r["T_s"] - meas
+            st.markdown(
+                f"Model {r['T_s']:.1f} °C vs measured {meas:.1f} °C: "
+                f"**{err:+.1f} °C** "
+                f"({100*abs(err)/max(meas-Tb,0.1):.0f}% of the film "
+                f"ΔT). Natural-convection correlations carry ±15-20% "
+                f"on h, roughly ±%.1f °C here."
+                % (0.18 * r["dT"]))
+
+    # ---------------------------------------------------------- 2
+    elif case.startswith("2"):
+        st.markdown(
+            "**The same cylinder, but the oil moves.** Direction "
+            "matters: a horizontal sweep is crossflow over the "
+            "cylinder (Churchill-Bernstein); an upward push is a "
+            "boundary layer ALONG the can (laminar flat plate). Same "
+            "velocity, different films - this is the propeller "
+            "question in isolation.")
+        c1, c2, c3, c4 = st.columns(4)
+        Q = c1.slider("Heat [W]", 0.5, 40.0, 3.0, 0.5, key="cs2_q")
+        u = c2.slider("Oil velocity [m/s]", 0.0, 0.20, 0.05, 0.005,
+                      key="cs2_u")
+        Dm = c3.slider("Diameter [mm]", 10.0, 80.0, 21.0, 0.5,
+                       key="cs2_d") / 1000
+        Tb = c4.slider("Bath temperature [°C]", 15.0, 60.0, 35.0, 1.0,
+                       key="cs2_tb")
+        Hm = st.slider("Height [mm]", 30.0, 300.0, 70.0, 5.0,
+                       key="cs2_h") / 1000
+        rc = case_mode_temp(cfl, Q, Dm, Hm, Tb, u, "cross")
+        ra = case_mode_temp(cfl, Q, Dm, Hm, Tb, u, "axial")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Crossflow (horizontal sweep)**")
+            st.metric("Surface temperature", f"{rc['T_s']:.1f} °C")
+            st.markdown(
+                "$Re_D=%.0f$, Churchill-Bernstein forced film "
+                "$h_f=%.0f$, natural $h_n=%.0f$, blended "
+                "$h=(h_n^3+h_f^3)^{1/3}=%.0f$ W/m²·K."
+                % (rc["Re"], rc["h_for"], rc["h_nat"], rc["h"]))
+        with c2:
+            st.markdown("**Axial (pushed upward)**")
+            st.metric("Surface temperature", f"{ra['T_s']:.1f} °C")
+            st.markdown(
+                "$Re_L=%.0f$ on the height, flat-plate "
+                "$Nu=0.664\\,Re_L^{1/2}Pr^{1/3}$ gives $h_f=%.0f$, "
+                "blended $h=%.0f$ W/m²·K."
+                % (u * Hm / film_props(cfl, Tb)["nu"], ra["h_for"],
+                   ra["h"]))
+        st.markdown(
+            "At this speed the crossflow film is **%.2fx** the axial "
+            "one, worth **%.1f °C** on the can. Buoyancy alignment "
+            "helps the axial case only through the blend with "
+            "$h_n=%.0f$." % (rc["h"] / max(ra["h"], 1e-9),
+                             ra["T_s"] - rc["T_s"], ra["h_nat"]))
+        meas = st.number_input(
+            "Measured surface temperature [°C] (0 = none)", 0.0,
+            250.0, 0.0, 0.1, key="cs2_meas")
+        if meas > 0:
+            st.markdown(
+                f"Crossflow model {rc['T_s']:.1f}, axial model "
+                f"{ra['T_s']:.1f}, measured {meas:.1f} °C.")
+
+    # ---------------------------------------------------------- 3
+    elif case.startswith("3"):
+        st.markdown(
+            "**Seal the bath, remove the sink.** N cells heat V "
+            "litres of oil; only the box surface loses to the room. "
+            "One line of physics: $m c_p\\,dT/dt = NQ - UA(T-T_{amb})$"
+            ". The steady level and the time constant are closed-form "
+            "- if the model's flywheel numbers are right, this curve "
+            "is right.")
+        c1, c2, c3, c4 = st.columns(4)
+        N = c1.slider("Cells", 1, 2000, 1080, 1, key="cs3_n")
+        Q = c2.slider("Heat per cell [W]", 0.1, 10.0, 2.3, 0.1,
+                      key="cs3_q")
+        V = c3.slider("Oil volume [L]", 1.0, 150.0, 63.0, 1.0,
+                      key="cs3_v")
+        Ue = c4.slider("Box U to room [W/m²·K]", 1.0, 20.0, 6.0, 0.5,
+                       key="cs3_u")
+        c1, c2, c3 = st.columns(3)
+        Ae = c1.slider("Box area [m²]", 0.5, 12.0,
+                       float(f"{g['A_box_ext']:.2f}"), 0.1,
+                       key="cs3_a")
+        Ta = c2.slider("Room [°C]", 10.0, 45.0, 25.0, 1.0,
+                       key="cs3_ta")
+        tend = c3.slider("Simulate [min]", 10.0, 600.0, 120.0, 10.0,
+                         key="cs3_t")
+        r = case_bath_warmup(cfl, N, Q, V, Ue, Ae, Ta, tend)
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Steady oil temperature",
+                  f"{r['T_ss']:.0f} °C" if r["T_ss"] < 500 else
+                  "runaway")
+        m2.metric("Time constant τ", f"{r['tau_min']:.0f} min")
+        m3.metric("Thermal mass m·cp", f"{r['C_kJK']:.0f} kJ/K")
+        fig = go.Figure(go.Scatter(x=r["t_min"], y=r["T"],
+                                   line=dict(color="#F59E0B",
+                                             width=3)))
+        fig.add_hline(y=r["T_ss"], line_dash="dash",
+                      line_color="#94A3B8")
+        fig.update_layout(height=280, xaxis_title="minutes",
+                          yaxis_title="oil °C",
+                          margin=dict(l=8, r=8, t=8, b=8))
+        st.plotly_chart(fig, width='stretch', key="cs3_fig")
+        st.markdown(
+            "$T_{ss}=T_{amb}+NQ/UA$ = %.0f + %.0f/%.1f = **%.0f °C**; "
+            "$\\tau = mc_p/UA$ = %.0f kJ/K / %.1f W/K = **%.0f min**. "
+            "Both are one-line hand checks; the curve is just their "
+            "exponential." % (Ta, N * Q, r["UA"], r["T_ss"],
+                              r["C_kJK"], r["UA"], r["tau_min"]))
+
+    # ---------------------------------------------------------- 4
+    elif case.startswith("4"):
+        st.markdown(
+            "**Now give the heat somewhere to go: one water tube.** "
+            "This is the full model's spine in isolation - oil film "
+            "on the tube, wall conduction, water film - with fins and "
+            "a plate as optional area multipliers. Every resistance "
+            "is printed so the ladder sums by hand.")
+        c1, c2, c3, c4 = st.columns(4)
+        Q = c1.slider("Heat [W]", 0.5, 60.0, 3.0, 0.5, key="cs4_q")
+        Twin = c2.slider("Water in [°C]", 5.0, 40.0, 20.0, 1.0,
+                         key="cs4_tw")
+        lpm = c3.slider("Water flow [L/min]", 0.05, 6.0, 0.6, 0.05,
+                        key="cs4_f")
+        u = c4.slider("Oil sweep at the tube [m/s]", 0.0, 0.15, 0.0,
+                      0.005, key="cs4_u")
+        c1, c2, c3, c4 = st.columns(4)
+        shape = c1.selectbox("Tube section",
+                             ["Round", "Square", "Rectangular"],
+                             key="cs4_shape")
+        odm = c2.slider("Tube OD / width [mm]", 4.0, 25.0, 10.0, 0.5,
+                        key="cs4_od") / 1000
+        Lt = c3.slider("Tube length in oil [m]", 0.1, 2.0, 0.85,
+                       0.05, key="cs4_l")
+        fins = c4.checkbox("Annular fins", False, key="cs4_fins")
+        plate_on = st.checkbox(
+            "Bond one plate to the tube (both faces wetted)", False,
+            key="cs4_pl")
+        td = dict(tube_shape=shape, tube_od=odm, tube_w=odm,
+                  tube_h=0.008, tube_wall=0.001, tube_mat="Copper",
+                  L_tube_case=Lt)
+        fin_geo = dict(H=0.008, t=0.0006, p=0.004, k=205.0)
+        plate = None
+        if plate_on:
+            pd_ = dict(plate_on=True, plate_t=0.0015,
+                       plate_mat="Aluminium", plate_contact=0.9,
+                       n_tubes=1, manifold_margin=0.0, h_cell=0.07)
+            pg_ = dict(n_rows=2, Lx=Lt)
+            plate = dict(d=pd_, g=pg_)
+        r = case_chain(cfl, loop, Q, 0.021, 0.070, Twin, lpm, td,
+                       u=u, mode="cross" if u > 0 else "still",
+                       fins=fins, fin_geo=fin_geo, plate=plate)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Oil settles at", f"{r['T_oil']:.1f} °C")
+        m2.metric("Can surface", f"{r['T_s']:.1f} °C")
+        m3.metric("Water film h", f"{r['h_water']:.0f} W/m²·K "
+                                  f"({r['regime']})")
+        m4.metric("Water rise", f"{r['dT_w']:.2f} °C")
+        rows = [("Oil film on the tube",
+                 r["R_ot"], Q * r["R_ot"]),
+                ("Tube wall", r["R_wall"], Q * r["R_wall"]),
+                ("Water film", r["R_in"], Q * r["R_in"])]
+        st.markdown(
+            "| Resistance | K/W | ΔT at %.1f W |\n|---|---|---|\n"
+            % Q + "\n".join("| %s | %.4f | %.2f °C |" % rr
+                            for rr in rows))
+        s = sum(x[2] for x in rows)
+        st.markdown(
+            "Sum of the ladder = **%.2f °C**; the solver's "
+            "$T_{oil}-\\bar T_w$ = **%.2f °C** - identical by "
+            "construction, which is the point: the full model is this "
+            "chain, replicated. Oil-side area: bare %.4f m²%s%s at "
+            "$h_{tube}=%.0f$ W/m²·K."
+            % (s, r["T_oil"] - r["T_w_mean"], r["A_o"],
+               (", fins +%.4f m² (η %.2f)" % (r["A_fin"], r["eta_f"]))
+               if r["A_fin"] > 0 else "",
+               (", plate +%.4f m² (η %.2f)" % (r["A_pl"], r["eta_p"]))
+               if r["A_pl"] > 0 else "", r["h_tube"]))
+        meas = st.number_input(
+            "Measured oil temperature [°C] (0 = none)", 0.0, 200.0,
+            0.0, 0.1, key="cs4_meas")
+        if meas > 0:
+            st.markdown(f"Model {r['T_oil']:.1f} vs measured "
+                        f"{meas:.1f} °C: **{r['T_oil']-meas:+.1f} °C**.")
+
+    # ---------------------------------------------------------- 5
+    elif case.startswith("5"):
+        st.markdown(
+            "**Three ways to move the same oil, one honest table.** "
+            "Same cell, same heat, same speed - only the flow "
+            "direction and its correlation change. This is the "
+            "student's propeller argument settled at case level.")
+        c1, c2, c3 = st.columns(3)
+        Q = c1.slider("Heat [W]", 0.5, 40.0, 3.0, 0.5, key="cs5_q")
+        u = c2.slider("Velocity [m/s]", 0.005, 0.15, 0.05, 0.005,
+                      key="cs5_u")
+        Tb = c3.slider("Oil bulk [°C]", 15.0, 60.0, 35.0, 1.0,
+                       key="cs5_tb")
+        rows = []
+        for mode, label, note in [
+                ("still", "Thermosiphon only",
+                 "buoyant film, Churchill-Chu"),
+                ("axial", "Bottom propeller (axial up)",
+                 "flat plate along the can"),
+                ("cross", "Stirred / channel sweep (crossflow)",
+                 "Churchill-Bernstein")]:
+            rr = case_mode_temp(cfl, Q, 0.021, 0.070, Tb, u, mode)
+            rows.append((label, rr["h"], rr["T_s"], note))
+        st.markdown(
+            "| Circulation | h [W/m²·K] | Can surface [°C] | "
+            "correlation |\n|---|---|---|---|\n" +
+            "\n".join("| %s | %.0f | %.1f | %s |" % rr for rr in rows))
+        st.markdown(
+            "Crossflow beats axial at equal speed because the "
+            "boundary layer restarts around the cylinder instead of "
+            "growing along %.0f mm of height; buoyancy alignment "
+            "cannot buy that back (it adds millimetres per second). "
+            "Serpentine then wins overall in the full model by adding "
+            "plate AREA on top of the crossflow film." % 70)
+
+    # ---------------------------------------------------------- 6
+    else:
+        st.markdown(
+            "**Decompose the full model you have on screen.** The "
+            "solver's own resistances, multiplied by the heat "
+            "actually flowing to water, must sum to the temperature "
+            "gap it reports. Any daylight between the two columns "
+            "would be a bug; the residual is the numerical solver "
+            "tolerance.")
+        Qw = res["Q_w"]
+        Tw_mean = d["T_water_in"] + res["dT_water"] / 2.0
+        rows = [("Cell can -> bulk oil", res["R_b"],
+                 Qw * res["R_b"]),
+                ("Bulk oil -> tube surface", res["R_ot"],
+                 Qw * res["R_ot"]),
+                ("Tube wall", res["R_wall"], Qw * res["R_wall"]),
+                ("Water film", res["R_in"], Qw * res["R_in"])]
+        st.markdown(
+            "| Stage | R [K/W] | ΔT = Q_w·R [°C] |\n|---|---|---|\n" +
+            "\n".join("| %s | %.5f | %.2f |" % rr for rr in rows))
+        s = sum(x[2] for x in rows)
+        actual = res["T_b"] - Tw_mean
+        st.markdown(
+            "Ladder sum **%.2f °C** vs the solver's "
+            "$T_b - \\bar T_w$ = **%.2f °C**: residual **%.3f °C** "
+            "(%.2f%% of the drop) - the bisection tolerance, nothing "
+            "hidden. Heat to water $Q_w$ = %.0f W of %.0f W generated "
+            "(the rest leaves through the box wall). Cases 1-5 are "
+            "these rows in isolation; the full model adds only "
+            "bookkeeping: N cells, n tubes, DCIR(T), busbars, "
+            "parasitics." % (s, actual, s - actual,
+                             100 * abs(s - actual) / max(actual, 1e-9),
+                             Qw, res["Q_eff"]))
+        st.markdown(
+            "Films in play right now: cell side %.0f (natural %.0f, "
+            "forced %.0f), tube side %.0f, water %.0f W/m²·K; "
+            "self-driven thermosiphon %.1f mm/s. Flip any Design "
+            "input and watch the same rows move."
+            % (res["h_cell"], res["h_cell_nat"], res["h_cell_for"],
+               res["h_tube"], res["h_water"], res["u_ts"] * 1000))
 
 
 def system_tab(d, g, fl, res, masses, loop, chil, Q_duty, C_steady):
@@ -2768,7 +3219,7 @@ def smoke():
     html = export_report_html(secs, figs, meta_s)
     deep = sankey_deep_dive(d, g, fl, res, masses, Q, Q_bus, 0.1, 0.0, ch,
                             d["C1"])
-    cp_html = cockpit_html(dict(
+    cp_pay_s = dict(
         design=dict(C1=2.0, T_amb=25.0, coolant=d["coolant"],
                     fmt=d["fmt"], Ns=d["Ns"], Np=d["Np"],
                     cap_Ah=d["cap_Ah"], r_dc=d["r_dc"],
@@ -2807,7 +3258,11 @@ def smoke():
                          mu=v_["mu"]) for k_, v_ in WATER_LOOP.items()},
         base=dict(T_b=res["T_b"]),
         consts=dict(K_loop=5.0, cal=d.get("cal_h", 1.0), KT=K_TUBE,
-                    RT=RHO_TUBE)))
+                    RT=RHO_TUBE))
+    if os.environ.get("CP_DUMP"):
+        import json as _json
+        open("/tmp/cp_payload.json", "w").write(_json.dumps(cp_pay_s))
+    cp_html = cockpit_html(cp_pay_s)
     assert len(cp_html) > 25000 and "PACK COCKPIT" in cp_html
     assert "TEMPERATURE LADDER" in cp_html and "MAX-C" in cp_html
     print(f"cockpit: {len(cp_html)//1000} kB component")
@@ -2863,6 +3318,33 @@ def smoke():
     print(f"propeller: axial T_b {rp_['T_b']:.1f} vs crossflow "
           f"{rs_['T_b']:.1f} °C at 5 cm/s; P {pp_['P']:.2f} W "
           f"({pp_['Vdot_lpm']:.0f} L/min swept)")
+    # ---- v10.4 verification-ladder cases ----
+    c1 = case_still_bath(fl, 3.0, 0.021, 0.070, 35.0)
+    assert abs(c1["resid"]) < 0.01, "case1 energy balance"
+    assert abs(c1["h"] * c1["A"] * c1["dT"] - 3.0) < 0.01
+    ca = case_mode_temp(fl, 3.0, 0.021, 0.070, 35.0, 0.05, "axial")
+    cc = case_mode_temp(fl, 3.0, 0.021, 0.070, 35.0, 0.05, "cross")
+    assert cc["h"] > ca["h"] > c1["h"], "cross > axial > still"
+    wm = case_bath_warmup(fl, 1080, 2.3, 63.0, 6.0, 5.0, 25.0, 120.0)
+    assert abs(wm["T_ss"] - (25.0 + 1080 * 2.3 / 30.0)) < 1e-6
+    td_ = dict(tube_shape="Round", tube_od=0.010, tube_wall=0.001,
+               tube_mat="Copper", L_tube_case=0.85)
+    ch_ = case_chain(fl, WATER_LOOP["Water"], 3.0, 0.021, 0.070,
+                     20.0, 0.6, td_)
+    lad = 3.0 * (ch_["R_ot"] + ch_["R_wall"] + ch_["R_in"])
+    assert abs(lad - (ch_["T_oil"] - ch_["T_w_mean"])) < 0.05,         "case4 ladder must close"
+    pd_ = dict(plate_on=True, plate_t=0.0015, plate_mat="Aluminium",
+               plate_contact=0.9, n_tubes=1, manifold_margin=0.0,
+               h_cell=0.07)
+    ch_p = case_chain(fl, WATER_LOOP["Water"], 3.0, 0.021, 0.070,
+                      20.0, 0.6, td_,
+                      plate=dict(d=pd_, g=dict(n_rows=2, Lx=0.85)))
+    assert ch_p["A_pl"] > 0 and ch_p["T_oil"] < ch_["T_oil"],         "a bonded plate must cool the oil"
+    print(f"cases: still {c1['T_s']:.1f} °C (h {c1['h']:.0f}) | "
+          f"axial h {ca['h']:.0f} < cross h {cc['h']:.0f} | "
+          f"bath ss {wm['T_ss']:.0f} °C tau {wm['tau_min']:.0f} min | "
+          f"chain oil {ch_['T_oil']:.1f} -> {ch_p['T_oil']:.1f} °C "
+          f"with plate (ladder closes {lad:.2f} °C)")
     fc = thermal_circuit_fig(d, g, fl, res, res["Q_eff"])
     assert len(fc.layout.shapes) >= 6
     nu_T_fig(fl)
@@ -3731,7 +4213,8 @@ def main():
 
     tabs = st.tabs(["Design", "Duty", "Results", "Cockpit", "Zones",
                     "Improve", "Ideas", "Safety", "Compare",
-                    "Learn", "Validate", "System", "Report"])
+                    "Learn", "Cases", "Validate", "System",
+                    "Report"])
 
     with tabs[0]:
         colL, colR = st.columns([1.15, 1], gap="large")
@@ -4178,6 +4661,7 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                         T_water_in=d["T_water_in"],
                         n_tubes=d["n_tubes"],
                         loop_fluid=d["loop_fluid"],
+                        ver=APP_VERSION,
                         tube_od=d["tube_od"], tube_wall=d["tube_wall"],
                         tube_mat=d["tube_mat"], fins_on=d["fins_on"],
                         tshape=d.get("tube_shape", "Round").lower()[:5]
@@ -5236,11 +5720,11 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                   ok=ok, T_gov=T_gov, T_limit=d["T_limit"],
                   kwh=masses["E_kwh"], mass=masses["m_pack"], Cmax=Cmax,
                   chil_el=chil["P_el"])
-    with tabs[11]:
+    with tabs[12]:
         system_tab(d, g, fl, res, masses, loop, chil,
                    Q_duty, C_steady)
 
-    with tabs[12]:
+    with tabs[13]:
         st.caption("Take this report with you: the HTML file is "
                    "instant; Build renders every section, table and "
                    "figure into real Word, PowerPoint and PDF files "
@@ -5290,6 +5774,9 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
 
     # ---------------- Validate and tune ---------------- #
     with tabs[10]:
+        cases_tab(d, g, fl, res, cool_df, loop)
+
+    with tabs[11]:
         st.subheader("Benchmark: Wang et al. 2023")
         bench_wang_tab()
         st.markdown("---")
