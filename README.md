@@ -587,6 +587,15 @@ thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
 
+## v10.7
+
+Reset of the FEA rung to the agreed basic module, built from the user's drawing.
+
+- The FEA tab now contains exactly ONE model: a battery of square cross-section, long into the plane, inside a rectangular liquid tank - plane 2D (not axisymmetric), transient, and with NO cooling: every outer wall is adiabatic, implemented as a convective flux with h_ext = 0 so the first cooling rung later is a one-parameter edit. The serpentine, fins, plates and the four earlier FEA cases are removed from the tab and the generator. The liquid is a conducting solid with the chosen coolant's properties at T0; buoyancy is deliberately excluded from this rung.
+- Everything is controllable and becomes a named COMSOL parameter: tank width and height, battery side, depth into the plane (used only to convert the battery's watts), bottom gap (default 10 mm per the drawing), sideways offset, heat, initial temperature, battery k/rho/cp, liquid choice, simulated time.
+- **Built-in correctness anchor**, answering "I am not sure the models are correct": with h_ext = 0 the tank conserves energy exactly, so the volume-average temperature must follow T0 + [Q/(sum rho*cp*A)]*t to numerical precision, independent of mesh. The exported model carries that slope as a parameter and its Evaluation Group tabulates the deviation at every output time - a wrong geometry, source or material shows there immediately. The app displays the same slope, thermal mass and lumped end temperature; smoke asserts the slope against a hand calculation to 1e-12.
+- The exported COMSOL file also reports what the lumped model cannot: the battery peak above the tank average, plus a temperature surface + contour and an average-vs-exact-line plot, results table written to text, .mph saved. FEMM is out of this rung honestly: its heat solver is steady-state only, and an uncooled tank never reaches steady state; it returns at the first steady rung.
+
 ## v10.6
 
 COMSOL promoted to the primary FEA target, as requested.
