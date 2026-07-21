@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.4"
+APP_VERSION = "v10.5"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -29,6 +29,7 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.io as pio
+import fea_export
 import streamlit.components.v1 as components
 import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -2136,6 +2137,70 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop, Q_duty, chil):
 
 
 
+
+# ------------------------------------------------------------------ #
+#  FEA export - operating-point builders (shared by tab and smoke)   #
+# ------------------------------------------------------------------ #
+def fea_p_case1(fl, Q, D, H, k_r, k_z, T_oil, mode, u, ends, can_on):
+    cm = case_mode_temp(fl, Q, D, H, T_oil, u, mode)
+    dT_core = Q / (4.0 * math.pi * k_r * H)
+    h_end = cm["h"] if ends else 0.0
+    return dict(Q=Q, D=D, H=H, k_r=k_r, k_z=k_z, h_side=cm["h"],
+                h_end=h_end, T_oil=T_oil, T_s_app=cm["T_s"],
+                T_core_app=cm["T_s"] + dT_core, can_on=can_on,
+                t_can=0.0003, k_can=16.0)
+
+
+def fea_p_case2(fl, loop, od, wall, Hf, tf, pf, k_fin, k_tube,
+                T_oil, T_w, lpm, Lt):
+    td = dict(tube_shape="Round", tube_od=od, tube_wall=wall,
+              tube_mat="Copper")
+    ts_ = tube_section(td)
+    mdot = lpm / 60.0 * loop["rho"] / 1000.0
+    wat = h_water_inside(loop, mdot, ts_["D_h"], Lt,
+                         lam_nu=ts_["lam_nu"], P_wet=ts_["P_in"])
+    tube = h_tube_side(fl, T_oil, T_w + 3.0, od, 0.0)
+    fp = fin_pack(od, Hf, tf, pf, k_fin, tube["h"])
+    return dict(d_o=od, t_wall=wall, H_f=Hf, t_f=tf, p_f=pf,
+                k_fin=k_fin, k_tube=k_tube, h_oil=tube["h"],
+                T_oil=T_oil, h_w=wat["h"], T_w=T_w,
+                eta_app=fp["eta"])
+
+
+def fea_p_case3(fl, loop, t_pl, H_pl, k_pl, tw, th, wall, k_tube,
+                T_oil, T_w, lpm, Lt, u):
+    td = dict(tube_shape="Rectangular", tube_w=tw, tube_h=th,
+              tube_wall=wall, tube_mat="Copper", tube_od=max(tw, th))
+    ts_ = tube_section(td)
+    mdot = lpm / 60.0 * loop["rho"] / 1000.0
+    wat = h_water_inside(loop, mdot, ts_["D_h"], Lt,
+                         lam_nu=ts_["lam_nu"], P_wet=ts_["P_in"])
+    tube = h_tube_side(fl, T_oil, T_w + 3.0, max(tw, th), u)
+    pd_ = dict(plate_on=True, plate_t=t_pl,
+               plate_mat="Aluminium" if k_pl < 300 else "Copper",
+               plate_contact=1.0, n_tubes=1, manifold_margin=0.0,
+               h_cell=H_pl)
+    _A, eta, _m = plate_fin_area(pd_, dict(n_rows=2, Lx=1.0),
+                                 tube["h"])
+    return dict(t_pl=t_pl, H_pl=H_pl, k_pl=k_pl, tube_w=tw,
+                tube_h=th, t_wall=wall, k_tube=k_tube,
+                h_oil=tube["h"], T_oil=T_oil, h_w=wat["h"], T_w=T_w,
+                eta_app=eta, shape="Rectangular")
+
+
+def fea_p_case4(fl, loop, base3, Q_cell, D, H, k_r, k_z, pitch,
+                mode, u):
+    cm = case_mode_temp(fl, Q_cell, D, H, base3["T_oil"], u, mode)
+    dT_core = Q_cell / (4.0 * math.pi * k_r * H)
+    gap = max((pitch - D) / 2 - base3["t_pl"] / 2, 5e-4)
+    extra = dict(D=D, H_cell=H, k_r=k_r, k_z=k_z,
+                 Q_per_m=Q_cell / pitch, gap=gap, h_cell=cm["h"],
+                 T_s_app=cm["T_s"], T_core_app=cm["T_s"] + dT_core)
+    P = dict(base3)
+    P.update(extra)
+    return P, extra
+
+
 def cases_tab(d, g, fl, res, cool_df, loop):
     st.markdown("#### The verification ladder")
     st.markdown(
@@ -2456,6 +2521,282 @@ def cases_tab(d, g, fl, res, cool_df, loop):
             "input and watch the same rows move."
             % (res["h_cell"], res["h_cell_nat"], res["h_cell_for"],
                res["h_tube"], res["h_water"], res["u_ts"] * 1000))
+
+
+
+def _fea_preview(case, P, extra=None):
+    """Plotly sketch of the exact 2D FEA domain with its BCs."""
+    fig = go.Figure()
+    fig.update_layout(height=330, margin=dict(l=8, r=8, t=30, b=8),
+                      plot_bgcolor="rgba(0,0,0,0)",
+                      paper_bgcolor="rgba(0,0,0,0)", showlegend=False,
+                      title=dict(text="What the FEA will solve",
+                                 x=0.01, font=dict(size=13)))
+    fig.update_xaxes(visible=False)
+    fig.update_yaxes(visible=False, scaleanchor="x")
+
+    def rect(x0, y0, x1, y1, fc, lc, name=""):
+        fig.add_shape(type="rect", x0=x0, y0=y0, x1=x1, y1=y1,
+                      fillcolor=fc, line=dict(color=lc, width=1.5))
+        if name:
+            fig.add_annotation(x=(x0 + x1) / 2, y=(y0 + y1) / 2,
+                               text=name, showarrow=False,
+                               font=dict(size=10, color="#334155"))
+
+    def bc(x, y, text, color):
+        fig.add_annotation(x=x, y=y, text=text, showarrow=False,
+                           font=dict(size=9, color=color))
+
+    if case == 1:
+        R, H = P["D"] / 2 * 1000, P["H"] * 1000
+        rect(0, 0, R, H, "rgba(241,82,82,.35)", "#B45309",
+             "jelly roll<br>k_r %.1f / k_z %.0f<br>q = Q/V"
+             % (P["k_r"], P["k_z"]))
+        if P["can_on"]:
+            rect(R, 0, R + 0.6, H, "rgba(148,163,184,.7)", "#64748B")
+        fig.add_shape(type="line", x0=0, y0=-2, x1=0, y1=H + 2,
+                      line=dict(color="#94A3B8", dash="dash"))
+        bc(-2.5, H / 2, "axis", "#64748B")
+        bc(R + 6, H / 2, "h_side = %.0f<br>T_oil = %.0f °C"
+           % (P["h_side"], P["T_oil"]), "#B45309")
+        bc(R / 2, H + 4, ("h_end = %.0f" % P["h_end"])
+           if P["h_end"] > 0 else "adiabatic ends", "#B45309")
+    elif case == 2:
+        ri = (P["d_o"] / 2 - P["t_wall"]) * 1000
+        ro = P["d_o"] / 2 * 1000
+        rf = ro + P["H_f"] * 1000
+        hp = P["p_f"] / 2 * 1000
+        tf2 = P["t_f"] / 2 * 1000
+        rect(ri, 0, ro, hp, "rgba(148,163,184,.7)", "#64748B",
+             "wall")
+        rect(ro, 0, rf, tf2, "rgba(203,213,225,.85)", "#94A3B8",
+             "half fin")
+        bc(ri - 1.2, hp / 2, "h_w %.0f<br>T_w %.0f"
+           % (P["h_w"], P["T_w"]), "#0369A1")
+        bc((ro + rf) / 2, tf2 + 1.0, "h_oil %.0f, T_oil %.0f"
+           % (P["h_oil"], P["T_oil"]), "#B45309")
+        bc((ri + rf) / 2, -0.8, "symmetry planes", "#64748B")
+    else:
+        t = P["t_pl"] * 1000
+        Hp = P["H_pl"] * 1000
+        tw = P["tube_w"] * 1000
+        th = P["tube_h"] * 1000
+        w = P["t_wall"] * 1000
+        rect(-tw / 2, 0, tw / 2, th, "rgba(148,163,184,.75)",
+             "#64748B")
+        rect(-tw / 2 + w, w, tw / 2 - w, th - w,
+             "rgba(56,189,248,.5)", "#0369A1", "water")
+        rect(-t / 2, -Hp, t / 2, 0, "rgba(203,213,225,.85)",
+             "#94A3B8", "plate")
+        bc(0, th + 4, "h_oil %.0f on every oil face, T_oil %.0f"
+           % (P["h_oil"], P["T_oil"]), "#B45309")
+        bc(0, th / 2 - 4.5, "h_w %.0f, T_w %.0f"
+           % (P["h_w"], P["T_w"]), "#0369A1")
+        if case == 4 and extra:
+            Dc = extra["D"] * 1000
+            Hc = extra["H_cell"] * 1000
+            g_ = extra["gap"] * 1000
+            x1 = -t / 2 - g_
+            rect(x1 - Dc, -Hc, x1, 0, "rgba(241,82,82,.35)",
+                 "#B45309", "cell slab<br>q = Q/V")
+            bc(x1 - Dc / 2, 5, "h_cell %.0f" % extra["h_cell"],
+               "#B45309")
+            bc(x1 - Dc - 4, -Hc / 2, "sym", "#64748B")
+    return fig
+
+
+def fea_tab(d, g, fl, cool_df, loop):
+    st.markdown("#### FEA export - FEMM and COMSOL, 2D")
+    st.markdown(
+        "The same verification ladder, exported as ready-to-run 2D "
+        "FEA models. **Division of labour, stated plainly:** FEMM's "
+        "heat-flow solver and COMSOL heat transfer solve "
+        "*conduction*; the oil and water films cannot be solved "
+        "there without CFD, so they enter as named convection "
+        "parameters $h$ and bulk temperatures - computed by this "
+        "app's correlations for the operating point you set below, "
+        "and still editable inside FEMM or COMSOL. The FEA therefore "
+        "independently checks everything the app approximates in "
+        "the solid: the anisotropic core gradient, fin and plate "
+        "efficiency, wall conduction, 2D spreading. Each file embeds "
+        "the app's predictions; the COMSOL model also builds the "
+        "derived values and the deltas, writes a results text file "
+        "and saves an .mph. Run FEMM scripts via File > Open Lua "
+        "Script; run COMSOL files with "
+        "`comsolbatch -inputfile <name>.java`.")
+    st.caption(
+        "Honesty note: the files pass an executed Lua stub check and "
+        "a compiled Java stub check here, but no FEMM or COMSOL "
+        "licence exists in this environment - if either tool objects "
+        "to a call on your machine, send the message back and it "
+        "will be fixed in one round.")
+    fcase = st.radio("Model", [
+        "1 · Heated cell (axisymmetric)",
+        "2 · Annular fin (axisymmetric)",
+        "3 · Plate on tube (planar)",
+        "4 · Serpentine unit cell (planar)"],
+        horizontal=True, key="fx_case")
+    fx_fl = st.selectbox("Coolant", list(cool_df["name"]),
+                         index=int((cool_df["name"] ==
+                                    d["coolant"]).idxmax()),
+                         key="fx_fluid")
+    cfl = fluid_dict(cool_df[cool_df["name"] == fx_fl].iloc[0])
+
+    if fcase.startswith("1"):
+        c1, c2, c3, c4 = st.columns(4)
+        Q = c1.slider("Heat [W]", 0.5, 40.0, 3.0, 0.5, key="fx1_q")
+        Dm = c2.slider("Diameter [mm]", 10.0, 80.0, 21.0, 0.5,
+                       key="fx1_d") / 1000
+        Hm = c3.slider("Height [mm]", 30.0, 300.0, 70.0, 5.0,
+                       key="fx1_h") / 1000
+        To = c4.slider("Bulk oil [°C]", 15.0, 60.0, 35.0, 1.0,
+                       key="fx1_to")
+        c1, c2, c3, c4 = st.columns(4)
+        kr = c1.slider("k radial [W/m·K]", 0.3, 3.0, 0.9, 0.1,
+                       key="fx1_kr")
+        kz = c2.slider("k axial [W/m·K]", 5.0, 60.0, 25.0, 1.0,
+                       key="fx1_kz")
+        mode = c3.selectbox("Oil motion", ["still", "cross", "axial"],
+                            key="fx1_mode")
+        u = c4.slider("Velocity [m/s]", 0.0, 0.15, 0.0, 0.005,
+                      key="fx1_u")
+        c1, c2 = st.columns(2)
+        ends = c1.checkbox("Cool the ends too", False, key="fx1_ends")
+        can = c2.checkbox("Steel can wall layer (0.3 mm)", True,
+                          key="fx1_can")
+        P = fea_p_case1(cfl, Q, Dm, Hm, kr, kz, To, mode, u, ends,
+                        can)
+        st.plotly_chart(_fea_preview(1, P), width='stretch',
+                        key="fx1_fig")
+        st.markdown(
+            "Operating point from the app: film $h$ = **%.0f "
+            "W/m²·K** (%s), predicting can **%.1f °C** and core "
+            "**%.1f °C**. The FEA checks the anisotropic conduction "
+            "against exactly these." % (P["h_side"], mode,
+                                        P["T_s_app"],
+                                        P["T_core_app"]))
+        lua, jav = fea_export.femm_cell_axi(P), \
+            fea_export.comsol_cell_axi(P)
+        fn = "ipl_case1_cell"
+    elif fcase.startswith("2"):
+        c1, c2, c3, c4 = st.columns(4)
+        od = c1.slider("Tube OD [mm]", 6.0, 20.0, 10.0, 0.5,
+                       key="fx2_od") / 1000
+        Hf = c2.slider("Fin height [mm]", 3.0, 20.0, 8.0, 0.5,
+                       key="fx2_hf") / 1000
+        tf = c3.slider("Fin thickness [mm]", 0.3, 2.0, 0.6, 0.1,
+                       key="fx2_tf") / 1000
+        pf = c4.slider("Fin pitch [mm]", 2.0, 12.0, 4.0, 0.5,
+                       key="fx2_pf") / 1000
+        c1, c2, c3 = st.columns(3)
+        kf = c1.selectbox("Fin material", ["Aluminium 205",
+                                           "Copper 385"],
+                          key="fx2_kf")
+        To = c2.slider("Bulk oil [°C]", 15.0, 60.0, 35.0, 1.0,
+                       key="fx2_to")
+        lpm = c3.slider("Water flow [L/min]", 0.05, 6.0, 0.6, 0.05,
+                        key="fx2_lpm")
+        P = fea_p_case2(cfl, loop, od, 0.001, Hf, tf, pf,
+                        205.0 if kf.startswith("Al") else 385.0,
+                        385.0, To, d["T_water_in"] + 2.0, lpm, 0.85)
+        st.plotly_chart(_fea_preview(2, P), width='stretch',
+                        key="fx2_fig")
+        st.markdown(
+            "App: oil film **%.0f**, water film **%.0f W/m²·K**, "
+            "fin efficiency **η = %.3f**. In the FEA, compare "
+            "$Q_{fea} / (h\\,A_{fin}\\,(T_{oil}-T_{root}))$ against "
+            "that η." % (P["h_oil"], P["h_w"], P["eta_app"]))
+        lua, jav = fea_export.femm_fin_axi(P), \
+            fea_export.comsol_fin_axi(P)
+        fn = "ipl_case2_fin"
+    elif fcase.startswith("3"):
+        c1, c2, c3, c4 = st.columns(4)
+        tp = c1.select_slider("Plate thickness [mm]",
+                              options=[1.0, 1.5, 2.0], value=1.5,
+                              key="fx3_tp") / 1000
+        Hp = c2.slider("Plate height [mm]", 30.0, 150.0, 70.0, 5.0,
+                       key="fx3_hp") / 1000
+        km = c3.selectbox("Plate material", ["Aluminium 205",
+                                             "Copper 385"],
+                          key="fx3_km")
+        u = c4.slider("Oil sweep [m/s]", 0.0, 0.15, 0.05, 0.005,
+                      key="fx3_u")
+        c1, c2, c3, c4 = st.columns(4)
+        tw = c1.slider("Tube width [mm]", 6.0, 25.0, 12.0, 0.5,
+                       key="fx3_tw") / 1000
+        th = c2.slider("Tube height [mm]", 4.0, 20.0, 8.0, 0.5,
+                       key="fx3_th") / 1000
+        To = c3.slider("Bulk oil [°C]", 15.0, 60.0, 35.0, 1.0,
+                       key="fx3_to")
+        lpm = c4.slider("Water flow [L/min]", 0.05, 6.0, 0.6, 0.05,
+                        key="fx3_lpm")
+        P = fea_p_case3(cfl, loop, tp, Hp,
+                        205.0 if km.startswith("Al") else 385.0,
+                        tw, th, 0.001, 385.0, To,
+                        d["T_water_in"] + 2.0, lpm, 0.85, u)
+        st.plotly_chart(_fea_preview(3, P), width='stretch',
+                        key="fx3_fig")
+        st.markdown(
+            "App: oil film **%.0f**, water film **%.0f W/m²·K**, "
+            "plate efficiency **η = %.3f** (tanh(mL)/mL). The FEA "
+            "solves the true 2D plate field - root constriction, tip "
+            "approach - and reports the heat into the water per "
+            "metre." % (P["h_oil"], P["h_w"], P["eta_app"]))
+        lua, jav = fea_export.femm_plate_2d(P), \
+            fea_export.comsol_plate_2d(P)
+        fn = "ipl_case3_plate"
+    else:
+        c1, c2, c3, c4 = st.columns(4)
+        Qc = c1.slider("Heat per cell [W]", 0.5, 12.0, 2.3, 0.1,
+                       key="fx4_q")
+        pitch = c2.slider("Pitch [mm]", 23.0, 40.0, 27.0, 0.5,
+                          key="fx4_p") / 1000
+        u = c3.slider("Channel velocity [m/s]", 0.0, 0.15, 0.05,
+                      0.005, key="fx4_u")
+        To = c4.slider("Bulk oil [°C]", 15.0, 60.0, 35.0, 1.0,
+                       key="fx4_to")
+        c1, c2, c3 = st.columns(3)
+        tp = c1.select_slider("Plate thickness [mm]",
+                              options=[1.0, 1.5, 2.0], value=1.5,
+                              key="fx4_tp") / 1000
+        lpm = c2.slider("Water flow [L/min]", 0.05, 6.0, 0.6, 0.05,
+                        key="fx4_lpm")
+        km = c3.selectbox("Plate material", ["Aluminium 205",
+                                             "Copper 385"],
+                          key="fx4_km")
+        base3 = fea_p_case3(cfl, loop, tp, 0.070,
+                            205.0 if km.startswith("Al") else 385.0,
+                            0.012, 0.008, 0.001, 385.0, To,
+                            d["T_water_in"] + 2.0, lpm, 0.85, u)
+        P, extra = fea_p_case4(cfl, loop, base3, Qc, 0.021, 0.070,
+                               0.9, 25.0, pitch,
+                               "cross" if u > 0 else "still", u)
+        st.plotly_chart(_fea_preview(4, P, extra), width='stretch',
+                        key="fx4_fig")
+        st.markdown(
+            "App at this point: cell film **%.0f**, tube-side "
+            "**%.0f**, water **%.0f W/m²·K**; predicted can "
+            "**%.1f °C**, core **%.1f °C**; the cell injects "
+            "**%.0f W per metre** of tube run. The FEA gets the "
+            "whole unit as solids plus films and must land on the "
+            "same numbers." % (extra["h_cell"], P["h_oil"],
+                               P["h_w"], extra["T_s_app"],
+                               extra["T_core_app"],
+                               extra["Q_per_m"]))
+        lua = fea_export.femm_unit_2d(P)
+        jav = fea_export.comsol_plate_2d(base3, with_cell=True,
+                                         extra=extra)
+        fn = "ipl_case4_unit"
+
+    cdl1, cdl2 = st.columns(2)
+    cdl1.download_button(f"FEMM script ({fn}.lua)", data=lua,
+                         file_name=f"{fn}.lua", mime="text/plain",
+                         use_container_width=True,
+                         key=f"fx_dl_lua_{fn}")
+    cdl2.download_button(f"COMSOL model file ({fn}.java)", data=jav,
+                         file_name=f"{fn}.java", mime="text/plain",
+                         use_container_width=True,
+                         key=f"fx_dl_jav_{fn}")
 
 
 def system_tab(d, g, fl, res, masses, loop, chil, Q_duty, C_steady):
@@ -3340,6 +3681,32 @@ def smoke():
                       20.0, 0.6, td_,
                       plate=dict(d=pd_, g=dict(n_rows=2, Lx=0.85)))
     assert ch_p["A_pl"] > 0 and ch_p["T_oil"] < ch_["T_oil"],         "a bonded plate must cool the oil"
+    # ---- v10.5 FEA export files ----
+    import fea_export as _FX
+    _p1 = fea_p_case1(fl, 3.0, 0.021, 0.070, 0.9, 25.0, 35.0,
+                      "still", 0.0, False, True)
+    _p2 = fea_p_case2(fl, WATER_LOOP["Water"], 0.010, 0.001, 0.008,
+                      0.0006, 0.004, 205.0, 385.0, 35.0, 22.0, 0.6,
+                      0.85)
+    _p3 = fea_p_case3(fl, WATER_LOOP["Water"], 0.0015, 0.070, 205.0,
+                      0.012, 0.008, 0.001, 385.0, 35.0, 22.0, 0.6,
+                      0.85, 0.05)
+    _p4, _ex = fea_p_case4(fl, WATER_LOOP["Water"], _p3, 2.33,
+                           0.021, 0.070, 0.9, 25.0, 0.027, "cross",
+                           0.05)
+    _files = [_FX.femm_cell_axi(_p1), _FX.comsol_cell_axi(_p1),
+              _FX.femm_fin_axi(_p2), _FX.comsol_fin_axi(_p2),
+              _FX.femm_plate_2d(_p3), _FX.comsol_plate_2d(_p3),
+              _FX.femm_unit_2d(_p4),
+              _FX.comsol_plate_2d(_p3, with_cell=True, extra=_ex)]
+    assert all(len(f) > 1500 for f in _files)
+    assert "hi_probdef" in _files[0] and "ho_getpointvalues" in         _files[0] and "ConvectiveHeatFlux" in _files[1]
+    assert "EvalGlobal" in _files[7] and "Q_per_m" in _files[7]
+    assert 0 < _p2["eta_app"] < 1 and 0 < _p3["eta_app"] < 1
+    print(f"fea export: 8 files, case1 h {_p1['h_side']:.0f} "
+          f"T_s {_p1['T_s_app']:.1f}, fin eta {_p2['eta_app']:.3f}, "
+          f"plate eta {_p3['eta_app']:.3f}, unit Q/m "
+          f"{_ex['Q_per_m']:.0f} W/m")
     print(f"cases: still {c1['T_s']:.1f} °C (h {c1['h']:.0f}) | "
           f"axial h {ca['h']:.0f} < cross h {cc['h']:.0f} | "
           f"bath ss {wm['T_ss']:.0f} °C tau {wm['tau_min']:.0f} min | "
@@ -4213,7 +4580,7 @@ def main():
 
     tabs = st.tabs(["Design", "Duty", "Results", "Cockpit", "Zones",
                     "Improve", "Ideas", "Safety", "Compare",
-                    "Learn", "Cases", "Validate", "System",
+                    "Learn", "Cases", "FEA", "Validate", "System",
                     "Report"])
 
     with tabs[0]:
@@ -5720,11 +6087,11 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                   ok=ok, T_gov=T_gov, T_limit=d["T_limit"],
                   kwh=masses["E_kwh"], mass=masses["m_pack"], Cmax=Cmax,
                   chil_el=chil["P_el"])
-    with tabs[12]:
+    with tabs[13]:
         system_tab(d, g, fl, res, masses, loop, chil,
                    Q_duty, C_steady)
 
-    with tabs[13]:
+    with tabs[14]:
         st.caption("Take this report with you: the HTML file is "
                    "instant; Build renders every section, table and "
                    "figure into real Word, PowerPoint and PDF files "
@@ -5777,6 +6144,9 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
         cases_tab(d, g, fl, res, cool_df, loop)
 
     with tabs[11]:
+        fea_tab(d, g, fl, cool_df, loop)
+
+    with tabs[12]:
         st.subheader("Benchmark: Wang et al. 2023")
         bench_wang_tab()
         st.markdown("---")
