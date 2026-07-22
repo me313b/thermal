@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.7"
+APP_VERSION = "v10.12"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -2158,7 +2158,9 @@ def fea_p_basic(fl, W, H, a, x_off, gap, L_z, Q, k_b, rho_b,
                 t_end=t_end, t_step=t_step, h_ext=h_ext,
                 T_amb=T_amb, dTdt_pred=dTdt,
                 C_kJK=C_per_m * L_z / 1000.0,
-                oil_name=fl["name"])
+                oil_name=fl["name"], bar_name="heat bar",
+                top_fixed=True, T_top=25.0, k_mult=1.0,
+                steady=True, cls="ipl_basic_2d")
 
 
 def cases_tab(d, g, fl, res, cool_df, loop):
@@ -2487,64 +2489,110 @@ def cases_tab(d, g, fl, res, cool_df, loop):
 def fea_tab(d, g, fl, cool_df, loop):
     st.markdown("#### FEA - the basic module (COMSOL, plane 2D)")
     st.markdown(
-        "One battery in a liquid tank, exactly as your drawing: the "
-        "battery is long and runs INTO the plane, so this is a plane "
-        "2D model (not axisymmetric), per metre of depth, with the "
-        "depth used only to convert the battery's watts. **No "
-        "cooling whatsoever**: every outer wall is adiabatic - "
-        "implemented as a convective flux with $h_{ext}=0$, so the "
-        "first cooling rung later is a one-parameter edit, not a "
-        "rebuild. The liquid is a conducting solid with the oil's "
-        "properties; buoyancy is deliberately not in this rung. "
-        "Everything below is a named parameter in the exported "
-        "file.")
-    st.markdown(
-        "**Why you can trust the run before comparing anything:** "
-        "with $h_{ext}=0$ the tank conserves energy exactly, so the "
-        "volume-average temperature must follow "
-        "$T(t) = T_0 + \\dfrac{Q}{\\sum \\rho c_p A}\\,t$ to "
-        "numerical precision, mesh or no mesh. The exported model "
-        "carries that slope as a parameter and tabulates its own "
-        "deviation from the line at every output time - the third "
-        "column of its results table should sit at zero. That is "
-        "the correctness anchor this whole ladder builds on.")
-    cx1, cx2 = st.columns([1.4, 1])
-    with cx2:
-        fx_fl = st.selectbox("Liquid", list(cool_df["name"]),
-                             index=int((cool_df["name"] ==
-                                        d["coolant"]).idxmax()),
-                             key="fx_fluid")
-    cfl = fluid_dict(cool_df[cool_df["name"] == fx_fl].iloc[0])
+        "Matched to your Fluent report (ODYSSEV-WP3): a long **heat "
+        "bar** - the report's battery surrogate is a 5 mm aluminium "
+        "bar, not a battery - inside a liquid tank, plane 2D, per "
+        "metre of depth. Boundary conditions as the report: sides "
+        "and bottom adiabatic, and the **top either held at a fixed "
+        "temperature** (the report's 25 °C sink, so a steady state "
+        "exists) **or sealed** (adiabatic, transient only). The "
+        "liquid is a conducting solid; the buoyant circulation "
+        "Fluent resolves is NOT solved here - instead the liquid "
+        "has an effective-k multiplier: the value of $k_{mult}$ "
+        "that reproduces Fluent's field IS the Nusselt number of "
+        "that circulation, which is exactly what this app's "
+        "correlations predict. Every input is a named parameter in "
+        "the exported file.")
+
+    def _wp3():
+        st.session_state.update(fxb_w=25.0, fxb_h=30.0, fxb_a=5.0, fxb_lz=300.0,
+                  fxb_gap=10.0, fxb_xo=0.0, fxb_q=0.75, fxb_t0=25.0,
+                  fxb_mat="Aluminium (Fluent defaults)",
+                  fx_fluid="Deionized water",
+                  fxb_top="Fixed temperature (as the report)",
+                  fxb_ttop=25.0, fxb_km=1.0)
+    st.button("Match the Fluent WP3 report (one click)",
+              on_click=_wp3, type="primary", key="fxb_preset")
+
     c1, c2, c3, c4 = st.columns(4)
-    Wt = c1.slider("Tank width [mm]", 30.0, 400.0, 100.0, 5.0,
+    Wt = c1.slider("Tank width [mm]", 10.0, 400.0, 25.0, 1.0,
                    key="fxb_w") / 1000
-    Ht = c2.slider("Tank height [mm]", 30.0, 400.0, 130.0, 5.0,
+    Ht = c2.slider("Tank height [mm]", 10.0, 400.0, 30.0, 1.0,
                    key="fxb_h") / 1000
-    a = c3.slider("Battery side [mm]", 5.0, 80.0, 22.0, 1.0,
+    a = c3.slider("Bar side [mm]", 2.0, 80.0, 5.0, 0.5,
                   key="fxb_a") / 1000
     Lz = c4.slider("Depth into the plane [mm]", 30.0, 1000.0, 300.0,
                    10.0, key="fxb_lz") / 1000
     c1, c2, c3, c4 = st.columns(4)
-    gap = c1.slider("Battery bottom above the floor [mm]", 0.0,
-                    200.0, 10.0, 1.0, key="fxb_gap") / 1000
-    xoff = c2.slider("Sideways offset from centre [mm]", -100.0,
-                     100.0, 0.0, 1.0, key="fxb_xo") / 1000
-    Q = c3.slider("Battery heat, total [W]", 0.2, 60.0, 3.0, 0.2,
-                  key="fxb_q")
+    gap = c1.slider("Bar bottom above the floor [mm]", 0.0, 200.0,
+                    10.0, 1.0, key="fxb_gap") / 1000
+    xoff = c2.slider("Sideways offset [mm]", -100.0, 100.0, 0.0,
+                     1.0, key="fxb_xo") / 1000
+    Q = c3.number_input("Bar heat, total [W]", 0.01, 200.0, 0.75,
+                        0.01, key="fxb_q")
     T0 = c4.slider("Initial temperature [°C]", 5.0, 50.0, 25.0, 1.0,
                    key="fxb_t0")
     c1, c2, c3, c4 = st.columns(4)
-    kb = c1.slider("Battery k (in-plane) [W/m·K]", 0.3, 30.0, 0.9,
-                   0.1, key="fxb_kb")
-    rb = c2.slider("Battery density [kg/m³]", 1000.0, 4000.0, 2500.0,
-                   50.0, key="fxb_rb")
-    cb = c3.slider("Battery cp [J/kg·K]", 500.0, 1500.0, 900.0, 10.0,
-                   key="fxb_cb")
-    tend = c4.slider("Simulate [min]", 5.0, 240.0, 30.0, 5.0,
-                     key="fxb_te") * 60.0
+    mat = c1.selectbox("Bar material", ["Aluminium (Fluent defaults)",
+                                        "Battery jelly-roll",
+                                        "Custom"], key="fxb_mat")
+    fx_fl = c2.selectbox("Liquid", list(cool_df["name"]),
+                         index=int((cool_df["name"] ==
+                                    "Deionized water").idxmax()),
+                         key="fx_fluid")
+    topbc = c3.selectbox("Top boundary",
+                         ["Fixed temperature (as the report)",
+                          "Adiabatic (sealed)"], key="fxb_top")
+    top_fixed = topbc.startswith("Fixed")
+    if top_fixed:
+        Ttop = c4.slider("Top temperature [°C]", 5.0, 60.0, 25.0,
+                         1.0, key="fxb_ttop")
+        study = st.selectbox("Study", ["Stationary (steady state)",
+                                       "Transient"], key="fxb_study")
+        steady = study.startswith("Stat")
+    else:
+        Ttop = 25.0
+        steady = False
+        st.caption("Sealed tank: no steady state exists, so the "
+                   "study is Transient.")
+    if mat.startswith("Alum"):
+        kb, rb, cb = 202.4, 2719.0, 871.0
+        st.caption("Aluminium at Fluent's defaults: k 202.4 W/m·K, "
+                   "ρ 2719 kg/m³, cp 871 J/kg·K.")
+    elif mat.startswith("Batt"):
+        kb, rb, cb = 0.9, 2500.0, 900.0
+        st.caption("Jelly-roll-like: k 0.9 (transverse), ρ 2500, "
+                   "cp 900 - the later rung where the surrogate "
+                   "becomes a cell.")
+    else:
+        cc1, cc2, cc3 = st.columns(3)
+        kb = cc1.slider("Bar k [W/m·K]", 0.3, 400.0, 202.4, 0.1,
+                        key="fxb_kb")
+        rb = cc2.slider("Bar density [kg/m³]", 500.0, 9000.0, 2719.0,
+                        10.0, key="fxb_rb")
+        cb = cc3.slider("Bar cp [J/kg·K]", 300.0, 1500.0, 871.0,
+                        1.0, key="fxb_cb")
+    cc1, cc2, cc3 = st.columns([1.2, 1, 1])
+    km = cc1.slider("Liquid effective-k multiplier (1 = pure "
+                    "conduction)", 1.0, 15.0, 1.0, 0.5, key="fxb_km")
+    tend = cc2.slider("Transient time [min]", 5.0, 240.0, 30.0, 5.0,
+                      key="fxb_te") * 60.0
+    build_only = cc3.checkbox(
+        "Build-only (java -> mph in seconds; press Compute in the "
+        "Desktop)", False, key="fxb_bo")
+
+    cfl = fluid_dict(cool_df[cool_df["name"] == fx_fl].iloc[0])
     P = fea_p_basic(cfl, Wt, Ht, a, xoff, gap, Lz, Q, kb, rb, cb,
                     T0, tend, max(tend / 30.0, 10.0), 0.0, 25.0)
+    _cls = ("ipl_wp3_report" if top_fixed else "ipl_sealed_check")
+    if build_only:
+        _cls += "_build"
+    P.update(bar_name=mat, top_fixed=top_fixed, T_top=Ttop,
+             k_mult=km, steady=steady, build_only=build_only,
+             cls=_cls)
+    qv = Q / (a * a * Lz)
 
+    cx1, cx2 = st.columns([1.4, 1])
     with cx1:
         fig = go.Figure()
         fig.update_layout(height=340, margin=dict(l=8, r=8, t=30,
@@ -2561,57 +2609,78 @@ def fea_tab(d, g, fl, cool_df, loop):
         fig.add_shape(type="rect", x0=0, y0=0, x1=Wm, y1=Hm,
                       fillcolor="rgba(129,140,248,.25)",
                       line=dict(color="#6366F1", width=2))
+        if top_fixed:
+            fig.add_shape(type="line", x0=0, y0=Hm, x1=Wm, y1=Hm,
+                          line=dict(color="#0369A1", width=5))
         bx0 = Wm / 2 - am / 2 + xm
         fig.add_shape(type="rect", x0=bx0, y0=gm, x1=bx0 + am,
                       y1=gm + am,
-                      fillcolor="rgba(250,204,21,.8)",
+                      fillcolor="rgba(250,204,21,.85)",
                       line=dict(color="#A16207", width=2))
-        fig.add_annotation(x=bx0 + am / 2, y=gm + am / 2,
-                           text="battery<br>q = Q/V",
+        fig.add_annotation(x=Wm / 2, y=Hm + Hm * 0.07,
+                           text=(f"top: T = {Ttop:.0f} °C (fixed)"
+                                 if top_fixed else
+                                 "top: adiabatic (sealed)"),
                            showarrow=False,
-                           font=dict(size=10, color="#713F12"))
-        fig.add_annotation(x=Wm / 2, y=Hm + Hm * 0.05,
+                           font=dict(size=10, color="#0369A1"
+                                     if top_fixed else "#64748B"))
+        fig.add_annotation(x=Wm / 2, y=-Hm * 0.08,
                            text=f"tank {Wm:.0f} × {Hm:.0f} mm · "
-                                f"liquid: {fx_fl} · all walls "
-                                f"adiabatic (h_ext = 0)",
+                                f"{fx_fl} (k × {km:.1f}) · sides "
+                                f"and bottom adiabatic",
                            showarrow=False,
                            font=dict(size=10, color="#475569"))
-        fig.add_annotation(x=bx0 + am / 2, y=gm / 2 if gm > 6 else
-                           -Hm * 0.05,
-                           text=f"{gm:.0f} mm off the floor",
-                           showarrow=False,
+        fig.add_annotation(x=bx0 + am / 2, y=gm + am / 2,
+                           text="bar", showarrow=False,
+                           font=dict(size=9, color="#713F12"))
+        fig.add_annotation(x=bx0 + am + Wm * 0.02, y=gm + am / 2,
+                           text=f"{am:.0f} mm, {gm:.0f} mm off the "
+                                f"floor",
+                           showarrow=False, xanchor="left",
                            font=dict(size=9, color="#A16207"))
         st.plotly_chart(fig, width='stretch', key="fxb_fig")
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Exact heating slope",
-              f"{P['dTdt_pred']*60:.3f} °C/min")
-    m2.metric("Thermal mass (this depth)", f"{P['C_kJK']:.1f} kJ/K")
-    m3.metric(f"Tank average after {tend/60:.0f} min",
-              f"{T0 + P['dTdt_pred']*tend:.1f} °C")
-    m4.metric("Battery share of the mass",
-              f"{100*rb*cb*a*a/(rb*cb*a*a + P['rho_oil']*P['cp_oil']*(Wt*Ht-a*a)):.1f} %")
-    st.markdown(
-        "The lumped line above is what the FEA's average MUST "
-        "reproduce. What the FEA adds - and the lumped model cannot "
-        "give - is the 2D field: the battery's peak above the tank "
-        "average and the shape of the plume-less conduction halo. "
-        "Those are the last columns of the exported results table, "
-        "and they are the first quantities worth discussing when "
-        "the run comes back.")
+    with cx2:
+        st.metric("Volumetric heat q_v", f"{qv:,.0f} W/m³")
+        st.caption("The report uses 100,000 W/m³ - the preset lands "
+                   "there exactly (0.75 W over 5×5×300 mm).")
+        if top_fixed:
+            st.metric("Anchor at the solution",
+                      f"top flux = {Q/Lz:.2f} W/m")
+            st.markdown(
+                "**Correctness check:** at steady state every watt "
+                "must leave through the fixed top, so the exported "
+                "model integrates the top flux and tabulates its "
+                "deviation from $Q/L_z$. **Comparison to Fluent:** "
+                "with $k_{mult}=1$ this conduction-only model will "
+                "read hotter than Fluent's 25.7 °C, because Fluent "
+                "resolves the ~0.85 mm/s buoyant plume. Raise "
+                "$k_{mult}$ until the fields match - that value is "
+                "the circulation's Nusselt number, the quantity "
+                "this app's correlations predict.")
+        else:
+            st.metric("Exact heating slope",
+                      f"{P['dTdt_pred']*60:.4f} °C/min")
+            st.markdown(
+                "**Correctness check:** sealed and adiabatic, the "
+                "volume-average temperature must climb this exact "
+                "line; the exported model tabulates its own "
+                "deviation at every step.")
     jav = fea_export.comsol_basic_2d(P)
-    st.download_button("COMSOL model file (ipl_basic_2d.java)",
-                       data=jav, file_name="ipl_basic_2d.java",
+    st.download_button(f"COMSOL model file ({P['cls']}.java)",
+                       data=jav, file_name=f"{P['cls']}.java",
                        mime="text/plain", use_container_width=True,
                        type="primary", key="fxb_dl")
     st.caption(
-        "Run with `comsolbatch -inputfile ipl_basic_2d.java` - it "
-        "compiles, solves the transient, writes "
-        "ipl_basic_2d_results.txt (average vs the exact line, "
-        "deviation, battery peak) and saves ipl_basic_2d.mph with a "
-        "temperature surface + contour and an average-vs-line plot. "
-        "FEMM has no transient heat solver, so the free cross-check "
-        "returns at the first steady rung.")
+        "Two steps on macOS (COMSOL 6.x batch takes .mph or a "
+        "compiled .class, not raw .java): "
+        f"`comsol compile {P['cls']}.java` then "
+        f"`comsol batch -inputfile {P['cls']}.class` - both from "
+        "/Applications/COMSOLxx/Multiphysics/bin/. Or after "
+        "compiling, open the .class straight in the Desktop via "
+        "File > Open (type: Compiled Model File for Java). The run "
+        "writes the results table (deviation column included) and "
+        "saves the .mph. FEMM's steady solver can twin the "
+        "fixed-top case as the next cross-check rung if wanted.")
 
 
 def system_tab(d, g, fl, res, masses, loop, chil, Q_duty, C_steady):
@@ -3496,21 +3565,27 @@ def smoke():
                       20.0, 0.6, td_,
                       plate=dict(d=pd_, g=dict(n_rows=2, Lx=0.85)))
     assert ch_p["A_pl"] > 0 and ch_p["T_oil"] < ch_["T_oil"],         "a bonded plate must cool the oil"
-    # ---- basic-module FEA export ----
-    _pb = fea_p_basic(fl, 0.100, 0.130, 0.022, 0.0, 0.010, 0.300,
-                      3.0, 0.9, 2500.0, 900.0, 25.0, 1800.0, 60.0,
-                      0.0, 25.0)
+    # ---- basic-module FEA export (WP3 report + sealed) ----
     import fea_export as _FX
-    _jb = _FX.comsol_basic_2d(_pb)
-    assert len(_jb) > 4000 and "Transient" in _jb and \
-        "dTdt_pred" in _jb and "DEVIATION" in _jb
-    _hand = 3.0 / 0.300 / (2500 * 900 * 0.022 ** 2 +
-                           _pb["rho_oil"] * _pb["cp_oil"] *
-                           (0.100 * 0.130 - 0.022 ** 2))
-    assert abs(_pb["dTdt_pred"] - _hand) < 1e-12, "slope must be exact"
-    print(f"fea basic: slope {_pb['dTdt_pred']*60:.3f} K/min, "
-          f"C {_pb['C_kJK']:.1f} kJ/K, 30 min -> "
-          f"{25 + _pb['dTdt_pred']*1800:.1f} degC")
+    _w = fluid_dict(cool_df[cool_df["name"] ==
+                            "Deionized water"].iloc[0])
+    _pb = fea_p_basic(_w, 0.025, 0.030, 0.005, 0.0, 0.010, 0.300,
+                      0.75, 202.4, 2719.0, 871.0, 25.0, 1800.0,
+                      60.0, 0.0, 25.0)
+    _qv = _pb["Q_cell"] / (_pb["a_cell"] ** 2 * _pb["L_z"])
+    assert abs(_qv - 1e5) < 1e-6, "WP3 q_v must be exactly 1e5 W/m3"
+    _pb.update(bar_name="aluminium", top_fixed=True, T_top=25.0,
+               k_mult=1.0, steady=True, cls="ipl_wp3_report")
+    _j1 = _FX.comsol_basic_2d(_pb)
+    assert "TemperatureBoundary" in _j1 and "Stationary" in _j1 \
+        and "intTop(ht.ntflux)" in _j1 and "Q_cell/L_z" in _j1
+    _ps = dict(_pb, top_fixed=False, steady=False,
+               cls="ipl_sealed_check")
+    _j2 = _FX.comsol_basic_2d(_ps)
+    assert "Transient" in _j2 and "dTdt_pred*t" in _j2 and \
+        "TemperatureBoundary" not in _j2
+    print(f"fea basic (WP3): q_v {_qv:.0f} W/m3, sealed slope "
+          f"{_pb['dTdt_pred']*60:.4f} K/min, both variants OK")
     print(f"cases: still {c1['T_s']:.1f} °C (h {c1['h']:.0f}) | "
           f"axial h {ca['h']:.0f} < cross h {cc['h']:.0f} | "
           f"bath ss {wm['T_ss']:.0f} °C tau {wm['tau_min']:.0f} min | "

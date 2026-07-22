@@ -2,14 +2,18 @@
 plane 2D, transient, no cooling. Everything else has been removed; the
 ladder rebuilds from this rung upward, together.
 
-The model: a rectangular tank of dielectric liquid with a long battery
-of square cross-section running into the plane. Plane 2D (NOT
-axisymmetric); results are per metre of depth, with the battery's
-total heat converted through the depth parameter. No cooling: every
-outer wall is adiabatic by default (h_ext = 0 is a parameter, so
-cooling can be switched on later by editing one number). The liquid is
-modelled as a conducting solid with the oil's k, rho, cp - buoyant
-convection is deliberately NOT in this rung.
+The model, matched to the ODYSSEV-WP3 Fluent report (18/07/2026):
+a rectangular liquid tank (water in the report, selectable) with a
+long HEAT BAR of square cross-section running into the plane - the
+report's battery surrogate is a 5 x 5 x 300 mm aluminium bar, 10 mm
+above the tank floor, generating 1e5 W/m3. Plane 2D (NOT
+axisymmetric). Boundary conditions as the report: sides and bottom
+adiabatic; the TOP either fixed at T_top (the report's 25 degC sink,
+giving a steady state) or adiabatic (sealed, transient only). The
+liquid is a conducting solid; buoyant convection is NOT solved - a
+liquid effective-conductivity multiplier k_mult is provided so the
+convection Fluent resolves can be emulated: the k_mult that matches
+Fluent IS the Nusselt number of the internal circulation.
 
 Built-in correctness check (why you can trust the run): with h_ext = 0
 the domain conserves energy exactly, so the volume-average temperature
@@ -35,35 +39,53 @@ DISCLAIMER = (
 def comsol_basic_2d(P):
     """P keys: W_tank, H_tank, a_cell, x_off, gap_bot, L_z, Q_cell,
     k_bat, rho_bat, cp_bat, k_oil, rho_oil, cp_oil, T0, t_end,
-    t_step, h_ext, T_amb, dTdt_pred, oil_name."""
-    cls = "ipl_basic_2d"
+    t_step, dTdt_pred, oil_name, bar_name, top_fixed (bool),
+    T_top, k_mult, steady (bool), cls (class/file name)."""
+    cls = P.get("cls", "ipl_basic_2d")
+    top_fixed = bool(P.get("top_fixed", True))
+    steady = bool(P.get("steady", top_fixed))
+    build_only = bool(P.get("build_only", False))
     s = f"""/*
- * BASIC MODULE - one battery in a liquid tank (plane 2D, transient,
- * no cooling).
+ * BASIC MODULE - a heat bar in a liquid tank (plane 2D), matched to
+ * the ODYSSEV-WP3 Fluent report.
  * {DISCLAIMER}
  *
  * Geometry: tank {P['W_tank']*1000:.0f} x {P['H_tank']*1000:.0f} mm;
- * battery square {P['a_cell']*1000:.0f} mm, centred at
- * x offset {P['x_off']*1000:.0f} mm, {P['gap_bot']*1000:.0f} mm above
- * the tank floor. Depth (into the plane) {P['L_z']*1000:.0f} mm is
- * used only to convert the battery's total {P['Q_cell']:.2f} W into
- * per-metre heat. Liquid: {P['oil_name']}.
+ * bar ({P['bar_name']}) square {P['a_cell']*1000:.1f} mm, x offset
+ * {P['x_off']*1000:.0f} mm, {P['gap_bot']*1000:.0f} mm above the
+ * floor. Depth {P['L_z']*1000:.0f} mm converts the bar's total
+ * {P['Q_cell']:.3f} W to q_v = {P['Q_cell']/(P['a_cell']**2*P['L_z']):.3g} W/m3
+ * (the report uses 1e5). Liquid: {P['oil_name']}, effective-k
+ * multiplier k_mult = {P.get('k_mult',1.0):.2f} (1 = pure conduction;
+ * the value that reproduces Fluent's field IS the Nusselt number of
+ * the buoyant circulation Fluent resolves and this model does not).
  *
- * BUILT-IN CHECK: with h_ext = 0 the volume-average temperature must
- * rise at exactly dTdt_pred = {P['dTdt_pred']*60:.4f} K/min. The
- * Evaluation Group prints the deviation at every output time; it
- * should sit at numerical zero. If it does not, do not trust
- * anything downstream - send the table back instead.
+ * Boundary conditions: sides and bottom adiabatic; top {'FIXED at T_top (the report sink) - a steady state exists' if top_fixed else 'ADIABATIC (sealed) - transient only'}.
+ * Study: {'Stationary' if steady else 'Transient'}.
+ * BUILT-IN CHECKS: {'at the solution, the heat leaving the top must equal the bar heat per metre, Q_cell/L_z - the Evaluation Group prints both and the deviation.' if top_fixed else 'sealed and adiabatic, the volume-average T must rise at exactly dTdt_pred = %.4f K/min; the Evaluation Group prints the deviation at every time - it must sit at numerical zero.' % (P['dTdt_pred']*60)}
  *
- * Run:   comsolbatch -inputfile {cls}.java
+ * Run - TWO STEPS. COMSOL 6.x batch accepts .mph or a compiled
+ * .class, NOT raw .java (per the COMSOL commands reference), so
+ * compile first, then run:
+ * macOS:
+ *   /Applications/COMSOL64/Multiphysics/bin/comsol compile {cls}.java
+ *   /Applications/COMSOL64/Multiphysics/bin/comsol batch -inputfile {cls}.class
+ *   (adjust COMSOL64 to your version: ls /Applications | grep COMSOL)
+ * Windows: bin/win64/comsolcompile.exe {cls}.java  then
+ *          bin/win64/comsolbatch.exe -inputfile {cls}.class
+ * Linux:   comsol compile {cls}.java && comsol batch -inputfile {cls}.class
+ * GUI alternative after compiling: COMSOL Desktop > File > Open,
+ * file type "Compiled Model File for Java (*.class)".
+ * Either way COMSOL compiles with its bundled Java,
  * Saves {cls}.mph and writes {cls}_results.txt.
  * COMSOL 6.x Java API, heat transfer in solids only.
  */
 import com.comsol.model.*;
 import com.comsol.model.util.*;
+import java.io.IOException;
 
 public class {cls} {{
-  public static Model run() {{
+  public static Model run() throws IOException {{
     Model model = ModelUtil.create("Model");
 """
     prm = [
@@ -92,10 +114,11 @@ public class {cls} {{
         ("T0_C", f"{P['T0']}[degC]", "initial temperature"),
         ("t_end", f"{P['t_end']}[s]", "simulated time"),
         ("t_step", f"{P['t_step']}[s]", "output interval"),
-        ("h_ext", f"{P['h_ext']}[W/(m^2*K)]",
-         "outer-wall film - 0 means NO cooling (adiabatic)"),
-        ("T_amb", f"{P['T_amb']}[degC]",
-         "ambient, only used when h_ext > 0"),
+        ("T_top", f"{P.get('T_top', 25.0)}[degC]",
+         "top-face temperature (the report's sink)"),
+        ("k_mult", f"{P.get('k_mult', 1.0)}",
+         "liquid effective-k multiplier; 1 = pure conduction, the "
+         "Fluent-matching value = Nu of the buoyant circulation"),
         ("A_cell", "a_cell^2", "battery cross-section"),
         ("A_oil", "W_tank*H_tank - a_cell^2", "liquid cross-section"),
         ("dTdt_pred",
@@ -104,6 +127,82 @@ public class {cls} {{
     ]
     for k, v, dsc in prm:
         s += f'    model.param().set("{k}", "{v}", "{dsc}");\n'
+    topbc = ("    // the report's sink: top face held at T_top\n"
+             "    model.component(\"comp1\").physics(\"ht\")"
+             ".create(\"temp1\", \"TemperatureBoundary\", 1);\n"
+             "    model.component(\"comp1\").physics(\"ht\")"
+             ".feature(\"temp1\").selection()"
+             ".named(\"geom1_selTop\");\n"
+             "    model.component(\"comp1\").physics(\"ht\")"
+             ".feature(\"temp1\").set(\"T0\", \"T_top\");\n"
+             if top_fixed else
+             "    // sealed: no boundary features - COMSOL's default"
+             " is thermal insulation everywhere\n")
+    _run = ("" if build_only else
+            "    model.study(\"std1\").run();\n")
+    if steady:
+        study = ("    model.study().create(\"std1\");\n"
+                 "    model.study(\"std1\").create(\"stat\","
+                 " \"Stationary\");\n" + _run)
+    else:
+        study = ("    model.study().create(\"std1\");\n"
+                 "    model.study(\"std1\").create(\"time\","
+                 " \"Transient\");\n"
+                 "    model.study(\"std1\").feature(\"time\")\n"
+                 "        .set(\"tlist\","
+                 " \"range(0,t_step,t_end)\");\n" + _run)
+    if build_only:
+        study += ("    // BUILD-ONLY: open the saved .mph in the "
+                  "Desktop and press Compute (F8);\n"
+                  "    // then Results > Derived Values > Evaluate "
+                  "All fills the table, and the\n"
+                  "    // plot groups render.\n")
+    if top_fixed:
+        evals = """    model.result().numerical().create("gev1", "EvalGlobal");
+    model.result().numerical("gev1").set("expr", new String[]{
+        "maxB(T)",
+        "aveB(T)",
+        "aveAll(T)",
+        "intTop(ht.ntflux)",
+        "Q_cell/L_z",
+        "intTop(ht.ntflux) - Q_cell/L_z"});
+    model.result().numerical("gev1").set("unit", new String[]{
+        "degC", "degC", "degC", "W/m", "W/m", "W/m"});
+    model.result().numerical("gev1").set("descr", new String[]{
+        "bar peak T",
+        "bar average T",
+        "tank volume-average T",
+        "FEA heat out of the top, per metre",
+        "bar heat per metre (the anchor)",
+        "DEVIATION - must be ~0 at the steady solution"});
+"""
+    else:
+        evals = """    model.result().numerical().create("gev1", "EvalGlobal");
+    model.result().numerical("gev1").set("expr", new String[]{
+        "aveAll(T)",
+        "T0_C + dTdt_pred*t",
+        "aveAll(T) - (T0_C + dTdt_pred*t)",
+        "maxB(T)",
+        "aveB(T)",
+        "maxB(T) - aveAll(T)"});
+    model.result().numerical("gev1").set("unit", new String[]{
+        "degC", "degC", "K", "degC", "degC", "K"});
+    model.result().numerical("gev1").set("descr", new String[]{
+        "FEA volume-average T",
+        "exact adiabatic line (the anchor)",
+        "DEVIATION - must be ~0 (sealed, adiabatic)",
+        "bar peak T",
+        "bar average T",
+        "bar peak above tank average"});
+"""
+    pg2 = ("" if steady else
+           """    model.result().create("pg2", "PlotGroup1D");
+    model.result("pg2").create("glob1", "Global");
+    model.result("pg2").feature("glob1").set("expr", new String[]{
+        "aveAll(T)", "T0_C + dTdt_pred*t"});
+    model.result("pg2").feature("glob1").set("unit", new String[]{
+        "degC", "degC"});
+""")
     s += """
     model.component().create("comp1", true);
     model.component("comp1").geom().create("geom1", 2);
@@ -133,12 +232,27 @@ public class {cls} {{
         .set("ymax", "gap_bot + a_cell + 1e-6");
     model.component("comp1").geom("geom1").feature("selCell")
         .set("condition", "inside");
+    // the top face, for the fixed-temperature sink and its flux check
+    model.component("comp1").geom("geom1").create("selTop",
+        "BoxSelection");
+    model.component("comp1").geom("geom1").feature("selTop")
+        .set("entitydim", 1);
+    model.component("comp1").geom("geom1").feature("selTop")
+        .set("xmin", "-1e-6");
+    model.component("comp1").geom("geom1").feature("selTop")
+        .set("xmax", "W_tank + 1e-6");
+    model.component("comp1").geom("geom1").feature("selTop")
+        .set("ymin", "H_tank - 1e-6");
+    model.component("comp1").geom("geom1").feature("selTop")
+        .set("ymax", "H_tank + 1e-6");
+    model.component("comp1").geom("geom1").feature("selTop")
+        .set("condition", "inside");
     model.component("comp1").geom("geom1").run();
 
     // liquid everywhere, battery material overriding its own domain
     model.component("comp1").material().create("matOil", "Common");
     model.component("comp1").material("matOil").propertyGroup("def")
-        .set("thermalconductivity", "k_oil");
+        .set("thermalconductivity", "k_mult*k_oil");
     model.component("comp1").material("matOil").propertyGroup("def")
         .set("density", "rho_oil");
     model.component("comp1").material("matOil").propertyGroup("def")
@@ -162,18 +276,7 @@ public class {cls} {{
         .named("geom1_selCell");
     model.component("comp1").physics("ht").feature("hs1")
         .set("Q0", "q_v");
-    // outer walls: convective flux with h_ext = 0 IS adiabatic, and
-    // becomes the cooling rung later by editing one parameter
-    model.component("comp1").physics("ht").create("hf1", "HeatFluxBoundary", 1);
-    model.component("comp1").physics("ht").feature("hf1").selection()
-        .all();
-    model.component("comp1").physics("ht").feature("hf1")
-        .set("HeatFluxType", "ConvectiveHeatFlux");
-    model.component("comp1").physics("ht").feature("hf1")
-        .set("h", "h_ext");
-    model.component("comp1").physics("ht").feature("hf1")
-        .set("Text", "T_amb");
-    model.component("comp1").physics("ht").feature("init1")
+__TOPBC__    model.component("comp1").physics("ht").feature("init1")
         .set("Tinit", "T0_C");
 
     // operators for the checks
@@ -185,42 +288,19 @@ public class {cls} {{
     model.component("comp1").cpl().create("aveB", "Average");
     model.component("comp1").cpl("aveB").selection()
         .named("geom1_selCell");
+    model.component("comp1").cpl().create("intTop", "Integration");
+    model.component("comp1").cpl("intTop").selection()
+        .geom("geom1", 1);
+    model.component("comp1").cpl("intTop").selection()
+        .named("geom1_selTop");
 
     model.component("comp1").mesh().create("mesh1");
     model.component("comp1").mesh("mesh1").autoMeshSize(3);
 
-    model.study().create("std1");
-    model.study("std1").create("time", "Transient");
-    model.study("std1").feature("time")
-        .set("tlist", "range(0,t_step,t_end)");
-    model.study("std1").run();
-
-    model.result().numerical().create("gev1", "EvalGlobal");
-    model.result().numerical("gev1").set("expr", new String[]{
-        "aveAll(T)",
-        "T0_C + dTdt_pred*t",
-        "aveAll(T) - (T0_C + dTdt_pred*t)",
-        "maxB(T)",
-        "aveB(T)",
-        "maxB(T) - aveAll(T)"});
-    model.result().numerical("gev1").set("unit", new String[]{
-        "degC", "degC", "K", "degC", "degC", "K"});
-    model.result().numerical("gev1").set("descr", new String[]{
-        "FEA volume-average T",
-        "exact adiabatic line (the anchor)",
-        "DEVIATION - must be ~0 when h_ext = 0",
-        "battery peak T",
-        "battery average T",
-        "battery peak above tank average"});
-    model.result().table().create("tbl1", "Table");
+__STUDY__
+__EVALS__    model.result().table().create("tbl1", "Table");
     model.result().numerical("gev1").set("table", "tbl1");
-    model.result().numerical("gev1").setResult();
-    model.result().export().create("texp1", "Table");
-    model.result().export("texp1").set("table", "tbl1");
-    model.result().export("texp1").set("filename",
-        "ipl_basic_2d_results.txt");
-    model.result().export("texp1").run();
-
+__EXEC__
     // surface + contour at the final time
     model.result().create("pg1", "PlotGroup2D");
     model.result("pg1").create("surf1", "Surface");
@@ -229,21 +309,30 @@ public class {cls} {{
     model.result("pg1").create("con1", "Contour");
     model.result("pg1").feature("con1").set("expr", "T");
     model.result("pg1").feature("con1").set("unit", "degC");
-    // average T against the exact line, over time
-    model.result().create("pg2", "PlotGroup1D");
-    model.result("pg2").create("glob1", "Global");
-    model.result("pg2").feature("glob1").set("expr", new String[]{
-        "aveAll(T)", "T0_C + dTdt_pred*t"});
-    model.result("pg2").feature("glob1").set("unit", new String[]{
-        "degC", "degC"});
-
-    model.save("ipl_basic_2d");
+__PG2__
+    model.save("{cls}");
     return model;
   }
 
-  public static void main(String[] args) {
+  public static void main(String[] args) throws IOException {
     run();
   }
 }
 """
+    execs = ("    // (evaluation and table export happen after "
+             "you press Compute)\n" if build_only else
+             '\n'.join([
+              '    model.result().numerical("gev1").setResult();',
+              '    model.result().export().create("texp1", "Table");',
+              '    model.result().export("texp1").set("table",'
+              ' "tbl1");',
+              '    model.result().export("texp1").set("filename",',
+              '        "{cls}_results.txt");',
+              '    model.result().export("texp1").run();']) + '\n')
+    s = (s.replace("__EXEC__", execs)
+         .replace("__TOPBC__", topbc)
+         .replace("__STUDY__", study)
+         .replace("__EVALS__", evals)
+         .replace("__PG2__", pg2)
+         .replace("{cls}", cls))
     return s

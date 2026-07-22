@@ -587,6 +587,32 @@ thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
 
+## v10.12
+
+First real COMSOL 6.4 compile, first real fix. The user's compile log showed the genuine API rejecting the generated file: Model.save(String) throws IOException, and the generated run()/main() did not declare it - my javac validation stub was too permissive to catch that. (The log's rendering of the save argument with spaces was cosmetic; the checksum-verified file on disk has underscores.) Fixes: every generated file now imports java.io.IOException and declares throws IOException on run() and main(); the validation stub's save() now carries the real signature, and a negative test confirms a file without the throws clause fails the stub compile. Samples regenerated.
+
+## v10.11
+
+Correction to the COMSOL run instructions, found the honest way: a byte-identical file on the user's machine failed with "model file is damaged or not valid". Root cause was my instruction, not the file: per the COMSOL 6.x commands reference, batch accepts .mph or a COMPILED model file for Java (.class) - "model files for Java need to be compiled before running" - so "comsol batch -inputfile file.java" was never valid on 6.x. All generated file headers and the FEA tab caption now give the two-step: comsol compile <name>.java, then comsol batch -inputfile <name>.class (or, after compiling, File > Open the .class in the Desktop as a Compiled Model File for Java). Samples regenerated with the corrected headers.
+
+## v10.10
+
+java -> mph, made explicit. The .mph format is COMSOL's proprietary binary and only COMSOL writes it - the model.save() at the end of every exported file already performs the conversion during the batch run. For a conversion WITHOUT solving, the FEA tab gains a Build-only toggle: the exported file (name suffixed _build) creates the whole model tree - parameters, geometry, materials, physics, mesh, study and prepared result definitions - and saves the .mph in seconds, skipping the solve and the solution-dependent evaluation/export calls. Open the .mph in the Desktop, press Compute (F8), then Results > Derived Values > Evaluate All fills the prepared table and the plot groups render.
+
+## v10.9
+
+Run instructions travel with the files. Every exported COMSOL model header now carries the exact macOS command (/Applications/COMSOLxx/Multiphysics/bin/comsol batch -inputfile <name>.java), plus the Windows and Linux equivalents, and the FEA tab caption leads with the macOS line. The batch run compiles the file with COMSOL's bundled Java, solves, writes <name>_results.txt and saves <name>.mph for the Desktop; the compile-only route (comsol compile, then File > Open the .class) is the GUI alternative.
+
+## v10.8
+
+The basic module redesigned to the source document (ODYSSEV-WP3 Fluent report, 18/07/2026), answering "where is the battery?"
+
+- There is no battery in the report: the battery surrogate is a 5 x 5 x 300 mm ALUMINIUM heat bar in a 25 x 30 x 300 mm WATER tank, 10 mm above the floor, generating 1e5 W/m3 (0.75 W total), with sides and bottom adiabatic and the TOP HELD AT 25 degC - so a steady state exists, unlike the previous fully-sealed assumption. The tab and generator now match this exactly, with a one-click "Match the Fluent WP3 report" preset (asserted in smoke: q_v = 1e5 W/m3 exactly).
+- Controls: bar material presets (Aluminium at Fluent's own property defaults 202.4 / 2719 / 871, Battery jelly-roll for the later rung, or Custom), liquid selectable (Deionized water default), top boundary Fixed-T or Adiabatic (sealed forces a transient study), Stationary or Transient study, and a liquid effective-k multiplier.
+- Two correctness anchors, one per boundary condition: fixed-top steady - the integrated heat leaving the top must equal Q/L_z, tabulated with its deviation; sealed transient - the volume-average T must climb the exact adiabatic line, deviation tabulated per step.
+- The honest Fluent relationship is stated in the app and in every file header: this model does NOT solve the ~0.85 mm/s buoyant circulation Fluent resolves, so at k_mult = 1 it reads hotter; the k_mult that reproduces Fluent's field IS the Nusselt number of that circulation - the quantity the app's correlations predict. Matching Fluent therefore measures convection instead of hiding it.
+- Exported class/file name follows the case: ipl_wp3_report.java (fixed top) or ipl_sealed_check.java (sealed).
+
 ## v10.7
 
 Reset of the FEA rung to the agreed basic module, built from the user's drawing.

@@ -58,7 +58,8 @@ public class Model {
   public Model export(Object... a) { return this; }
   public Model run() { return this; }
   public Model setResult() { return this; }
-  public Model save(String s) { return this; }
+  public Model save(String s) throws java.io.IOException {
+    return this; }
 }
 """
 
