@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.23"
+APP_VERSION = "v10.24"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -3211,6 +3211,17 @@ def fea_tab(d, g, fl, cool_df, loop):
     cx1, cx2 = st.columns([1.4, 1])
     with cx1:
         fig = go.Figure()
+        Wm, Hm = Wt * 1000, Ht * 1000
+        bwm, bhm = b_w * 1000, b_h * 1000
+        gm, xm = gap * 1000, xoff * 1000
+        # shapes-only figures autorange unreliably under
+        # scaleanchor; an invisible corner trace pins the view,
+        # and constrain="domain" letterboxes the locked aspect
+        # instead of cropping it
+        fig.add_scatter(x=[-0.06 * Wm, 1.06 * Wm],
+                        y=[-0.14 * Hm, 1.14 * Hm],
+                        mode="markers", marker=dict(opacity=0),
+                        hoverinfo="skip")
         fig.update_layout(height=340, margin=dict(l=8, r=8, t=30,
                                                   b=8),
                           plot_bgcolor="rgba(0,0,0,0)",
@@ -3218,11 +3229,12 @@ def fea_tab(d, g, fl, cool_df, loop):
                           showlegend=False,
                           title=dict(text="What the FEA will solve",
                                      x=0.01, font=dict(size=13)))
-        fig.update_xaxes(visible=False)
-        fig.update_yaxes(visible=False, scaleanchor="x")
-        Wm, Hm = Wt * 1000, Ht * 1000
-        bwm, bhm = b_w * 1000, b_h * 1000
-        gm, xm = gap * 1000, xoff * 1000
+        fig.update_xaxes(visible=False,
+                         range=[-0.06 * Wm, 1.06 * Wm])
+        fig.update_yaxes(visible=False,
+                         range=[-0.14 * Hm, 1.14 * Hm],
+                         scaleanchor="x", scaleratio=1,
+                         constrain="domain")
         fig.add_shape(type="rect", x0=0, y0=0, x1=Wm, y1=Hm,
                       fillcolor="rgba(129,140,248,.25)",
                       line=dict(color="#6366F1", width=2))

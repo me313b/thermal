@@ -587,6 +587,10 @@ thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
 
+## v10.24
+
+Preview rendering fixed. The "What the FEA will solve" drawing is a shapes-only figure, and Plotly autoranges those unreliably when the axes carry scaleanchor - on wide windows the fan-mode preview collapsed to an empty tank with one stray arrow line. An invisible corner-pinning trace now sets the view, explicit ranges are given, and constrain="domain" letterboxes the true 25 x 30 aspect inside wide columns instead of cropping it. Verified by rendering the figure to PNG headlessly (fan and pipes variants) before and after.
+
 ## v10.23
 
 Your first real fan-mode compile logs closed two COMSOL 6.4 API facts, and the front-view architecture arrived: battery-row geometry and water pipes.
