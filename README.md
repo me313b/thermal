@@ -587,6 +587,16 @@ thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
 
+## v10.26
+
+Real cells in 3D, a self-configuring analytical link, intelligent sizing, and the benchmark button gone.
+
+- 3D = the actual pack: battery-array mode gains a type selector (18650 / 21700 / 26650 / 4680 / custom d,h), columns x cells counts, and INDEPENDENT free gaps in x and y. Every cell in the exported 3D model is a REAL vertical cylinder (r = d/2, height h) at those pitches - 4x8 = 32 cylinders compile clean alongside the pipes; heat, thermal mass and the sealed anchor use the true cylinder volume (V_bat = n*pi*r^2*h). The 2D front view keeps the honest end-on rectangle per column. The fan plane-mean anchor is shape-independent (it only needs Q, the band height and m-dot cp), so the exact closed forms carry over to cylinders unchanged - the 3D Tout_pred is now written in that Q-based form.
+- The analytical model follows YOUR run: every exported file now also writes <cls>_settings.txt - a plain-java echo of every parameter plus the evaluated heat (Q_eval, so battery-current runs stay numeric). Upload that file (or the .java itself - both parse) in the checker and the app judges against THAT run's dimensions, heat, speed, fluid and configuration, stating the basis on screen; nothing depends on the current inputs matching by hand. Round-tripped in smoke for both routes.
+- Intelligent sizing, nothing capped: auto-size (default on) derives the tank from the array - side margins max(1.2 pitch, 18 mm, 1.5 d), 15 mm to the pipe zone, max(15 mm, h/4) of free liquid before the lid - shown as metrics; untick to type anything up to 2 m, with a too-tight-margin warning. Pack-scale limits everywhere: 100 columns, 500 cells deep, 40 pipes, 20 kW, 2 kA per cell.
+- A "what you should get" line always states the anchors for the current configuration with numbers (exact outlet mean and leak, exact slope, exact heating rate), plus the honest notes for pipes (judge by BALANCE) and multi-cell (mean anchors exact with the total width; series skipped).
+- The benchmark preset and all its wording are removed, as asked twice; the checker line now points to the settings-upload route instead. Per-cell current shows per-cell AND total heat.
+
 ## v10.25
 
 The batteries themselves, even in 2D - and your run log decoded.

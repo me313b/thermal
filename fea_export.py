@@ -59,22 +59,70 @@ def _rows_geom_2d(P):
 
 
 def _rows_geom_3d(P):
-    n = int(P.get("n_rows", 1) or 1)
-    out = ""
-    for k in range(1, n + 1):
-        off = f"({2*k - 1 - n}/2.0)*pitch_x"
-        out += (f'    model.component("comp1").geom("geom1")'
-                f'.create("blk_b{k}", "Block");\n'
+    """REAL cells: an n_rows (across, x) by n_cells (deep, y) grid
+    of vertical cylinders, radius b_w/2, height b_h, centred in
+    both plan directions at pitch_x / pitch_y. Falls back to a
+    single rectangular block when cyl_cells is off (custom-bar
+    mode)."""
+    if not P.get("cyl_cells"):
+        return ('    model.component("comp1").geom("geom1")'
+                '.create("blk2", "Block");\n'
+                '    model.component("comp1").geom("geom1")'
+                '.feature("blk2")\n'
+                '        .set("size", new String[]'
+                '{"b_w", "L_z", "b_h"});\n'
+                '    model.component("comp1").geom("geom1")'
+                '.feature("blk2")\n'
+                '        .set("pos", new String[]'
+                '{"W_tank/2 - b_w/2 + x_off", "0",\n'
+                '                                 "gap_bot"});\n')
+    nx = int(P.get("n_rows", 1) or 1)
+    ny = int(P.get("n_cells", 1) or 1)
+    out = (f"    // the batteries: {nx} x {ny} REAL cylindrical "
+           "cells, axis vertical,\n    // centred in plan at "
+           "pitch_x (across) / pitch_y (deep)\n")
+    for kx in range(1, nx + 1):
+        for ky in range(1, ny + 1):
+            tag = f"cb{kx}_{ky}"
+            ox = f"({2*kx - 1 - nx}/2.0)*pitch_x"
+            oy = f"({2*ky - 1 - ny}/2.0)*pitch_y"
+            out += (
                 f'    model.component("comp1").geom("geom1")'
-                f'.feature("blk_b{k}")\n'
-                f'        .set("size", new String[]'
-                f'{{"b_w", "L_z", "b_h"}});\n'
+                f'.create("{tag}", "Cylinder");\n'
                 f'    model.component("comp1").geom("geom1")'
-                f'.feature("blk_b{k}")\n'
-                f'        .set("pos", new String[]'
-                f'{{"W_tank/2 - b_w/2 + x_off + {off}", "0",\n'
-                f'                                 "gap_bot"}});\n')
+                f'.feature("{tag}").set("r", "b_w/2");\n'
+                f'    model.component("comp1").geom("geom1")'
+                f'.feature("{tag}").set("h", "b_h");\n'
+                f'    model.component("comp1").geom("geom1")'
+                f'.feature("{tag}").set("pos", new String[]\n'
+                f'        {{"W_tank/2 + x_off + {ox}", '
+                f'"L_z/2 + {oy}", "gap_bot"}});\n')
     return out
+
+
+def _settings_java(P, prm, cls):
+    """Static echo of the run's parameters to {cls}_settings.txt -
+    plain java.io, no COMSOL API risk. The app reads this file (or
+    the .java itself) to configure the analytical model from the
+    RUN, not from the current sliders."""
+    lines = [f'    java.io.PrintWriter pw_ = new '
+             f'java.io.PrintWriter("{cls}_settings.txt");',
+             f'    pw_.println("% ipl-settings v1 cls={cls} '
+             f'dim={P.get("_dim", 2)} '
+             f'flow={P.get("flow_mode", "top" if P.get("top_fixed", True) else "sealed")} '
+             f'cyl={1 if P.get("cyl_cells") else 0}");']
+    for k, v, _ in prm:
+        vv = str(v).replace('"', '')
+        lines.append(f'    pw_.println("{k}={vv}");')
+    if P.get("heat_mode") == "battery":
+        qn = float(P.get("I_cell", 0.0)) ** 2 * (
+            float(P.get("R0_cell", 0.0)) +
+            float(P.get("R1_cell", 0.0)))
+    else:
+        qn = float(P.get("Q_cell", 0.0))
+    lines.append(f'    pw_.println("Q_eval={qn}");')
+    lines.append('    pw_.close();')
+    return "\n".join(lines) + "\n"
 
 
 def _pipe_prm_rows(P):
@@ -633,7 +681,7 @@ __EXEC__
     model.result("pg1").feature("con1").set("expr", "T");
     model.result("pg1").feature("con1").set("unit", "degC");
 __PG2__
-    model.save("{cls}");
+__SETTINGS__    model.save("{cls}");
     return model;
   }
 
@@ -675,6 +723,8 @@ __PG2__
          .replace("__TOPBC__", topbc)
          .replace("__FAN__", fanblk)
          .replace("__ROWS2D__", _rows_geom_2d(P))
+         .replace("__SETTINGS__",
+                  _settings_java(dict(P, _dim=2), prm, cls))
          .replace("__PIPEGEOM__", _pipes_geom_2d(P))
          .replace("__PIPEPHY__", _pipes_physics(P, 2))
          .replace("__PIPECPL__", _pipes_cpl(P, 2))
@@ -740,15 +790,23 @@ public class {cls} {{
         ("b_h", f"{P.get('b_h', P['a_cell'])}[m]",
          "bar height (z)"),
         ("n_rows_", f"{int(P.get('n_rows', 1) or 1)}",
-         "number of battery rows across the width"),
+         "cell columns across the width (x)"),
+        ("n_cells_", f"{int(P.get('n_cells', 1) or 1)}",
+         "cells along the depth (y)"),
         ("pitch_x", f"{P.get('pitch_x', 0.025)}[m]",
-         "row centre-to-centre spacing"),
+         "centre-to-centre spacing across the width"),
+        ("pitch_y", f"{P.get('pitch_y', 0.025)}[m]",
+         "centre-to-centre spacing along the depth"),
+        ("n_tot_", "n_rows_*n_cells_", "total cell count"),
         ("W_bars", "n_rows_*b_w",
-         "total heated width (all rows)"),
+         "total heated width (all columns)"),
+        ("V_bat",
+         f"{'n_tot_*pi*(b_w/2)^2*b_h' if P.get('cyl_cells') else 'n_rows_*b_w*b_h*L_z'}",
+         "total battery volume"),
         ("x_off", f"{P['x_off']}[m]", "bar offset from centreline"),
         ("gap_bot", f"{P['gap_bot']}[m]", "bar bottom above floor"),
         *_qcell_rows(P),
-        ("q_v", "Q_cell/(W_bars*b_h*L_z)", "volumetric heat"),
+        ("q_v", "Q_cell/V_bat", "volumetric heat"),
         ("k_bat", f"{P['k_bat']}[W/(m*K)]", "bar conductivity"),
         ("rho_bat", f"{P['rho_bat']}[kg/m^3]", "bar density"),
         ("cp_bat", f"{P['cp_bat']}[J/(kg*K)]", "bar cp"),
@@ -768,7 +826,7 @@ public class {cls} {{
          "fan mode: inlet oil temperature at the floor"),
         ("P_adv", "rho_oil*cp_oil*u_fan/(k_mult*k_oil)",
          "fan mode: advection parameter [1/m]"),
-        ("m_slope", "q_v*W_bars/W_tank/(rho_oil*cp_oil*u_fan)",
+        ("m_slope", "Q_cell/(b_h*W_tank*L_z)/(rho_oil*cp_oil*u_fan)",
          "fan mode: mean-profile slope in the bar band"),
         ("Tout_pred",
          "T_in + m_slope*b_h + (m_slope/P_adv)*"
@@ -776,8 +834,8 @@ public class {cls} {{
          "fan mode: EXACT outlet mean temperature (the anchor)"),
         *_pipe_prm_rows(P),
         ("dTdt_pred",
-         "Q_cell/(rho_bat*cp_bat*W_bars*b_h*L_z + "
-         "rho_oil*cp_oil*(W_tank*H_tank - W_bars*b_h)*L_z)",
+         "Q_cell/(rho_bat*cp_bat*V_bat + "
+         "rho_oil*cp_oil*(W_tank*H_tank*L_z - V_bat))",
          "exact sealed heating slope"),
     ]
     for k_, v_, d_ in prm:
@@ -962,7 +1020,7 @@ public class {cls} {{
     model.result("pg1").feature("vol1").set("expr", "T");
     model.result("pg1").feature("vol1").set("unit", "degC");
 
-    model.save("{cls}");
+{_settings_java(dict(P, _dim=3), prm, cls)}    model.save("{cls}");
     return model;
   }}
 

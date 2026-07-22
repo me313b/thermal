@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.25"
+APP_VERSION = "v10.26"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -2394,6 +2394,49 @@ def fan_check_field(x, y, T, W, H, bw, bh, xc, gap, q_v, k, rho, cp, u,
     return m
 
 
+def parse_run_settings(text):
+    """Read an ipl *_settings.txt echo or the generated .java and
+    return the run's parameters as floats (units stripped), plus
+    flow/dim/cyl flags from the header."""
+    import re as _re
+    out = {}
+    hdr = _re.search(r"ipl-settings v1 cls=(\S+) dim=(\d) "
+                     r"flow=(\S+) cyl=(\d)", text)
+    if hdr:
+        out["_cls"], out["_dim"] = hdr.group(1), int(hdr.group(2))
+        out["_flow"], out["_cyl"] = hdr.group(3), \
+            bool(int(hdr.group(4)))
+        for ln in text.splitlines():
+            mm = _re.match(r"([A-Za-z_][A-Za-z0-9_]*)=(.+)$",
+                           ln.strip())
+            if mm:
+                v = mm.group(2).split("[")[0]
+                try:
+                    out[mm.group(1)] = float(v)
+                except ValueError:
+                    out[mm.group(1) + "_expr"] = v
+        return out
+    # a generated .java: harvest param().set pairs
+    for k, v in _re.findall(
+            r'param\(\)\.set\("([A-Za-z_][A-Za-z0-9_]*)",\s*'
+            r'"([^"]+)"', text):
+        vv = v.split("[")[0]
+        try:
+            out[k] = float(vv)
+        except ValueError:
+            out[k + "_expr"] = vv
+    if "W_tank" in out:
+        out["_dim"] = 3 if "L_z" in out and \
+            'regulargridz3' in text else 2
+        out["_flow"] = ("fan" if "FluidHeatTransferModel" in text
+                        else ("top" if 'feature("temp1")' in text
+                              else "sealed"))
+        out["_cyl"] = '"Cylinder"' in text and '"cb1_1"' in text
+        return out
+    raise ValueError("not an IPL settings echo or generated "
+                     ".java")
+
+
 def fea_p_basic(fl, W, H, a, x_off, gap, L_z, Q, k_b, rho_b,
                 cp_b, T0, t_end, t_step, h_ext, T_amb):
     """Operating point + the exact adiabatic slope for the basic
@@ -2980,35 +3023,21 @@ def fea_tab(d, g, fl, cool_df, loop):
         "Every input is a named parameter in the exported files.")
 
     st.markdown(
-        "**The test order** - do these in sequence, each step "
-        "proves the next one's foundation: **1)** Load the "
-        "benchmark, download both files, run them, upload the two "
-        "`_upload_to_app.txt` files here - anchors and the "
-        "three-way comparison must pass. **2)** Press the "
-        "calibrate button on the fixed-top upload to set the "
+        "**The test order** - each step proves the next one's "
+        "foundation: **1)** Configure a small case (one custom "
+        "bar, fixed lid), export both files, run them, upload "
+        "the two `_upload_to_app.txt` files plus a "
+        "`_settings.txt` - the anchors and the 2D-3D comparison "
+        "must pass. **2)** Press the calibrate button to set the "
         "k-multiplier from your own run. **3)** Switch the heat "
-        "source to the battery model at your design current "
-        "(same Q drives the analytical anchors and the COMSOL "
-        "files). **4)** Switch Configuration to Fan upflow, "
-        "re-run both files, upload - the outlet-mean anchor must "
-        "pass; calibrate the fan speed if you ran a different "
-        "one. **5)** Tick the water pipes, set count/size/film, "
-        "re-run - judge by the BALANCE row in the summary "
-        "table. **6)** Switch Bar geometry to Battery row and "
-        "repeat 3-5 on the real cell sizes.")
+        "source to the battery model at your design current - "
+        "the same Q drives the analytics and both COMSOL files. "
+        "**4)** Configuration to Fan upflow, re-run, upload: the "
+        "outlet-mean anchor must pass. **5)** Tick the water "
+        "pipes and judge by the BALANCE row in the summary "
+        "table. **6)** Bar geometry to Battery array - real "
+        "cylinders in 3D - and repeat 3-5 at pack scale.")
 
-    def _wp3():
-        st.session_state.update(fxb_w=25.0, fxb_h=30.0,
-                  fxb_gm="Custom bar",
-                  fxb_bw=5.0, fxb_bh=5.0, fxb_lz=300.0,
-                  fxb_pipes=False,
-                  fxb_gap=10.0, fxb_xo=0.0, fxb_q=0.75, fxb_t0=25.0,
-                  fxb_mat="Aluminium (benchmark values)",
-                  fx_fluid="Deionized water",
-                  fxb_cfg="Fixed-top (benchmark)",
-                  fxb_ttop=25.0, fxb_km=1.0)
-    st.button("Load the benchmark case (one click)",
-              on_click=_wp3, type="primary", key="fxb_preset")
     st.caption("Battery source for heat: **"
                + st.session_state.get("bat_src",
                                       "default (simplified)")
@@ -3016,66 +3045,86 @@ def fea_tab(d, g, fl, cool_df, loop):
                "sends its sustained heat into the Q field below.")
 
     c1, c2, c3, c4 = st.columns(4)
-    Wt = c1.number_input("Tank width [mm]", 5.0, 400.0, 25.0,
-                         0.1, format="%.1f", key="fxb_w") / 1000
-    Ht = c2.number_input("Tank height [mm]", 5.0, 400.0, 30.0,
-                         0.1, format="%.1f", key="fxb_h") / 1000
+    auto_sz = c1.checkbox(
+        "Auto-size the tank around the pack (margins keep the "
+        "walls from forcing the field)", True, key="fxb_auto")
+    if not auto_sz:
+        Wt = c1.number_input("Tank width [mm]", 5.0, 2000.0,
+                             25.0, 0.1, format="%.1f",
+                             key="fxb_w") / 1000
+        Ht = c2.number_input("Tank height [mm]", 5.0, 2000.0,
+                             30.0, 0.1, format="%.1f",
+                             key="fxb_h") / 1000
+    else:
+        Wt = Ht = None  # derived after the array is defined
     gmode = c3.selectbox("Bar geometry",
                          ["Custom bar",
                           "Battery row (count × cell size)"],
                          key="fxb_gm")
     if gmode.startswith("Battery"):
-        bb1, bb2, bb3, bb4, bb5 = st.columns(5)
-        n_rows = bb1.number_input("Rows across the width", 1, 30,
-                                  4, 1, key="fxb_nr")
-        n_cells = bb2.number_input("Cells per row (into the "
-                                   "plane)", 1, 200, 10, 1,
-                                   key="fxb_nc")
-        cell_d = bb3.number_input("Cell diameter [mm]", 5.0, 80.0,
-                                  21.0, 0.1, format="%.1f",
-                                  key="fxb_cd") / 1000
-        cell_h = bb4.number_input("Cell height [mm]", 10.0, 200.0,
-                                  70.0, 0.1, format="%.1f",
-                                  key="fxb_ch") / 1000
-        row_gap = bb5.number_input("Gap between rows [mm]", 0.5,
-                                   60.0, 6.0, 0.1, format="%.1f",
-                                   key="fxb_rg") / 1000
+        types = {"18650": (18.0, 65.0), "21700": (21.0, 70.0),
+                 "26650": (26.0, 65.0), "4680": (46.0, 80.0),
+                 "Custom cell": None}
+        bb0, bb1, bb2, bb3, bb4 = st.columns(5)
+        btype = bb0.selectbox("Battery type", list(types),
+                              index=1, key="fxb_bt")
+        n_rows = bb1.number_input("Columns across the width (x)",
+                                  1, 100, 4, 1, key="fxb_nr")
+        n_cells = bb2.number_input("Cells along the depth (y)",
+                                   1, 500, 8, 1, key="fxb_nc")
+        gap_x = bb3.number_input("Free gap between cells, x "
+                                 "[mm]", 0.2, 100.0, 4.0, 0.1,
+                                 format="%.1f",
+                                 key="fxb_gx") / 1000
+        gap_y = bb4.number_input("Free gap between cells, y "
+                                 "[mm]", 0.2, 100.0, 4.0, 0.1,
+                                 format="%.1f",
+                                 key="fxb_gy") / 1000
+        if types[btype] is None:
+            cc_, ch_ = st.columns(2)
+            cell_d = cc_.number_input("Cell diameter [mm]", 3.0,
+                                      200.0, 21.0, 0.1,
+                                      format="%.1f",
+                                      key="fxb_cd") / 1000
+            cell_h = ch_.number_input("Cell height [mm]", 5.0,
+                                      500.0, 70.0, 0.1,
+                                      format="%.1f",
+                                      key="fxb_ch") / 1000
+        else:
+            cell_d = types[btype][0] / 1000
+            cell_h = types[btype][1] / 1000
         b_w, b_h = cell_d, cell_h
-        pitch_x = cell_d + row_gap
-        Lz = n_cells * cell_d
+        pitch_x = cell_d + gap_x
+        pitch_y = cell_d + gap_y
+        Lz = n_cells * pitch_y
         span = (n_rows - 1) * pitch_x + cell_d
-        m1, m2 = st.columns(2)
-        m1.metric("Row depth (= cells × d)",
-                  f"{Lz*1000:.0f} mm")
-        m2.metric("Array span across the width",
-                  f"{span*1000:.0f} mm of {Wt*1000:.0f}")
-        if span > Wt - 0.002:
-            st.error("The rows do not fit: widen the tank, "
-                     "reduce the row count, or shrink the gap.")
-        st.caption("Battery-array mode: the 2D front view shows "
-                   "EVERY row as its own d-wide, h-tall "
-                   "rectangle at the set pitch, and the 3D "
-                   "blocks are exactly the rows - d × h × "
-                   "(cells·d) each. Total heat divides equally "
-                   "between rows; the depth is derived, not "
-                   "typed.")
+        st.caption(
+            f"{btype}: d = {cell_d*1000:.1f} mm, h = "
+            f"{cell_h*1000:.1f} mm · array {n_rows} × {n_cells} "
+            f"= {n_rows*n_cells} cells · span across the width "
+            f"{span*1000:.0f} mm · depth (= cells × pitch) "
+            f"{Lz*1000:.0f} mm. In 3D every cell is a REAL "
+            "cylinder at these pitches; the 2D front view keeps "
+            "the end-on rectangle per column (width d), the "
+            "honest plane approximation.")
     else:
         n_rows, pitch_x = 1, 0.025
-        b_w = c4.number_input("Bar width [mm]", 1.0, 120.0, 5.0,
+        n_cells, pitch_y = 1, 0.025
+        b_w = c4.number_input("Bar width [mm]", 1.0, 500.0, 5.0,
                               0.1, format="%.1f",
                               key="fxb_bw") / 1000
         cc0, cc1_, _ = st.columns(3)
-        b_h = cc0.number_input("Bar height [mm]", 1.0, 200.0, 5.0,
-                               0.1, format="%.1f",
+        b_h = cc0.number_input("Bar height [mm]", 1.0, 1000.0,
+                               5.0, 0.1, format="%.1f",
                                key="fxb_bh") / 1000
-        Lz = cc1_.number_input("Depth into the plane [mm]", 10.0,
-                               4000.0, 300.0, 1.0, format="%.0f",
-                               key="fxb_lz") / 1000
-    c1, c2, c3, c4 = st.columns(4)
-    gap = c1.number_input("Bar bottom above the floor [mm]", 0.0,
-                          300.0, 10.0, 0.1, format="%.1f",
+        Lz = cc1_.number_input("Depth into the plane [mm]", 5.0,
+                               10000.0, 300.0, 1.0,
+                               format="%.0f", key="fxb_lz") / 1000
+        span = b_w
+    gap = c1.number_input("Cells bottom above the floor [mm]", 0.0,
+                          500.0, 10.0, 0.1, format="%.1f",
                           key="fxb_gap") / 1000
-    xoff = c2.number_input("Sideways offset [mm]", -150.0, 150.0,
+    xoff = c2.number_input("Sideways offset [mm]", -500.0, 500.0,
                            0.0, 0.1, format="%.1f",
                            key="fxb_xo") / 1000
     hsrc = c3.selectbox("Heat source",
@@ -3089,17 +3138,23 @@ def fea_tab(d, g, fl, cool_df, loop):
         import battery_card as _BCm
         _bm = st.session_state.get("bat_model") or             _BCm.default_model()
         hb1, hb2, hb3, hb4 = st.columns(4)
-        I_cell = hb1.number_input("Constant current [A]", 0.1,
-                                  300.0, 5.0, 0.1, format="%.1f",
+        I_cell = hb1.number_input("Constant current per cell [A]", 0.1,
+                                  2000.0, 5.0, 0.1, format="%.1f",
                                   key="fxb_ic")
         soc_h = hb2.number_input("SOC [%]", 5.0, 95.0, 50.0, 5.0,
                                  key="fxb_socq")
         R0c = float(_bm["r0"](soc_h))
         R1c = float(_bm["r1"](soc_h))
-        Q = I_cell * I_cell * (R0c + R1c)
-        hb3.metric("R0 + R1 at SOC",
+        q_one = I_cell * I_cell * (R0c + R1c)
+        n_tot_ui = int(st.session_state.get("fxb_nr", 1)) * \
+            int(st.session_state.get("fxb_nc", 1)) if \
+            st.session_state.get("fxb_gm", "Custom").startswith(
+                "Battery") else 1
+        Q = q_one * n_tot_ui
+        hb3.metric("Per cell / total",
+                   f"{q_one*1000:.0f} mW / {Q:.2f} W")
+        hb4.metric("R0 + R1 at SOC",
                    f"{1000*(R0c+R1c):.2f} mΩ")
-        hb4.metric("Q = I²(R0+R1)", f"{Q:.3f} W")
         st.caption("Battery source in use: **"
                    + st.session_state.get("bat_src",
                                           "default (simplified)")
@@ -3111,10 +3166,10 @@ def fea_tab(d, g, fl, cool_df, loop):
                    "one current, three models.")
     else:
         I_cell, R0c, R1c = 0.0, 0.0, 0.0
-        Q = st.number_input("Bar heat, total [W]", 0.01, 200.0,
+        Q = st.number_input("Total heat, all cells [W]", 0.01, 20000.0,
                             0.75, 0.01, key="fxb_q")
     c1, c2, c3, c4 = st.columns(4)
-    mat = c1.selectbox("Bar material", ["Aluminium (benchmark values)",
+    mat = c1.selectbox("Bar material", ["Aluminium",
                                         "Battery jelly-roll",
                                         "Custom"], key="fxb_mat")
     fx_fl = c2.selectbox("Liquid", list(cool_df["name"]),
@@ -3122,7 +3177,7 @@ def fea_tab(d, g, fl, cool_df, loop):
                                     "Deionized water").idxmax()),
                          key="fx_fluid")
     cfg = c3.selectbox("Configuration",
-                       ["Fixed-top (benchmark)",
+                       ["Fixed-top (isothermal lid)",
                         "Sealed (adiabatic, transient)",
                         "Fan upflow (open channel)"], key="fxb_cfg")
     top_fixed = cfg.startswith("Fixed")
@@ -3156,7 +3211,7 @@ def fea_tab(d, g, fl, cool_df, loop):
                    "study is Transient.")
     if mat.startswith("Alum"):
         kb, rb, cb = 202.4, 2719.0, 871.0
-        st.caption("Aluminium at the benchmark values (from your CFD report): k 202.4 "
+        st.caption("Aluminium: k 202.4 "
                    "W/m·K, ρ 2719 kg/m³, cp 871 J/kg·K.")
     elif mat.startswith("Batt"):
         kb, rb, cb = 0.9, 2500.0, 900.0
@@ -3198,9 +3253,9 @@ def fea_tab(d, g, fl, cool_df, loop):
         1500.0, 20.0
     if use_pipes and (top_fixed or fan):
         pp1, pp2, pp3, pp4, pp5 = st.columns(5)
-        n_pipes = pp1.number_input("Number of pipes", 1, 12, 3, 1,
+        n_pipes = pp1.number_input("Number of pipes", 1, 40, 3, 1,
                                    key="fxb_np")
-        d_pipe = pp2.number_input("Pipe OD [mm]", 2.0, 30.0, 8.0,
+        d_pipe = pp2.number_input("Pipe OD [mm]", 2.0, 60.0, 8.0,
                                   0.1, format="%.1f",
                                   key="fxb_pd") / 1000
         pipe_drop = pp3.number_input("Centre below the lid [mm]",
@@ -3220,6 +3275,26 @@ def fea_tab(d, g, fl, cool_df, loop):
     else:
         use_pipes = False
 
+    if Wt is None:
+        ms = max(1.2 * pitch_x, 0.018, 1.5 * b_w)
+        Wt = span + 2 * ms + abs(xoff) * 2
+        top_zone = (d_pipe + 0.010 if use_pipes else 0.0)
+        Ht = gap + b_h + 0.015 + top_zone + max(0.015,
+                                                0.25 * b_h)
+        a1, a2 = st.columns(2)
+        a1.metric("Tank width (auto)", f"{Wt*1000:.0f} mm")
+        a2.metric("Tank height (auto)", f"{Ht*1000:.0f} mm")
+        st.caption("Auto margins: sides ≥ max(1.2·pitch, 18 mm, "
+                   "1.5·d) each; above the cells 15 mm to the "
+                   "pipe zone plus max(15 mm, h/4) of free "
+                   "liquid before the lid - untick to type any "
+                   "size.")
+    else:
+        ms = (Wt - span) / 2 - abs(xoff)
+        if ms < max(pitch_x, 0.012):
+            st.warning(f"Side margin {ms*1000:.0f} mm is tight - "
+                       "the walls may force the field; widen the "
+                       "tank or enable auto-size.")
     cfl = fluid_dict(cool_df[cool_df["name"] == fx_fl].iloc[0])
     P = fea_p_basic(cfl, Wt, Ht, b_w, xoff, gap, Lz, Q, kb, rb, cb,
                     T0, tend, max(tend / 30.0, 10.0), 0.0, 25.0)
@@ -3234,6 +3309,8 @@ def fea_tab(d, g, fl, cool_df, loop):
              heat_mode="battery" if bat_mode else "manual",
              I_cell=I_cell, R0_cell=R0c, R1_cell=R1c,
              b_w=b_w, b_h=b_h, n_rows=n_rows, pitch_x=pitch_x,
+             n_cells=n_cells, pitch_y=pitch_y,
+             cyl_cells=gmode.startswith("Battery"),
              n_pipes=(n_pipes if use_pipes else 0),
              d_pipe=d_pipe, pipe_drop=pipe_drop, h_w=h_w,
              T_w=T_w)
@@ -3430,9 +3507,91 @@ def fea_tab(d, g, fl, cool_df, loop):
         "with slope $Q'/(kW)$; pure energy conservation, no "
         "approximation - then compares against the **analytical "
         "series solution** outside the bar footprint. Checked "
-        "against the case configured above, so press the "
-        "benchmark preset (or match the inputs) before "
-        "uploading.")
+        "against the run's own setup: upload its _settings.txt "
+        "(or the .java) below and everything configures "
+        "automatically; otherwise match the inputs by hand.")
+    _exp = []
+    if fan:
+        _fmE, _fiE = fan_mean_exact(
+            np.array([Ht]), Wt, Ht, n_rows * b_w, b_h, gap,
+            Q / (n_rows * b_w * b_h * Lz), km * P["k_oil"],
+            P["rho_oil"], P["cp_oil"], u_fan, T_in)
+        _exp.append(f"outlet mean EXACTLY "
+                    f"{_fiE['T_out']:.4f} °C (Pe "
+                    f"{_fiE['Pe']:.0f}; inlet leak "
+                    f"{100*_fiE['cond_bottom_W_per_m']/max(Q/Lz,1e-12):.1f}%)")
+        _exp.append("inlet row = T_in")
+    elif top_fixed:
+        _exp.append(f"top row EXACTLY {Ttop:.1f} °C")
+        _exp.append(f"row-mean slope above the cells EXACTLY "
+                    f"{-(Q/Lz)/(km*P['k_oil']*Wt)*0.001*1000:.2f}"
+                    f" °C per mm × ... = "
+                    f"{(Q/Lz)/(km*P['k_oil']*Wt):.1f} K/m "
+                    "(downward)")
+        _exp.append("flat mean below the cells")
+    else:
+        _dt = Q / (P["rho_bat"] * P["cp_bat"] * (
+            n_rows * b_w * b_h * Lz) + P["rho_oil"] *
+            P["cp_oil"] * (Wt * Ht * Lz -
+                           n_rows * b_w * b_h * Lz)) * 60
+        _exp.append(f"volume-average rises EXACTLY "
+                    f"{_dt:.3f} °C/min, for ever")
+    if use_pipes:
+        _exp.append("with pipes: the summary's BALANCE row "
+                    "(heat in = pipes + other exits) must sit "
+                    "at ~0; the profile anchors above become "
+                    "references, not verdicts")
+    if n_rows > 1 or gmode.startswith("Battery"):
+        _exp.append("multi-cell: the mean-profile anchors are "
+                    "exact with the TOTAL heated width; the "
+                    "single-strip series map is skipped")
+    st.markdown("**What you should get** (the anchors, before "
+                "you run anything): " + "; ".join(_exp) + ".")
+    su = st.file_uploader(
+        "Configure from a run: its `_settings.txt` (or the "
+        ".java) - the analytical model then judges against THAT "
+        "run's parameters, not the inputs above",
+        type=["txt", "java"], key="fx_setup")
+    applied = None
+    if su is not None:
+        try:
+            applied = parse_run_settings(
+                su.read().decode("utf-8", errors="replace"))
+            st.success(
+                f"Analytical basis: **{su.name}** - "
+                f"{applied.get('_dim', '?')}D, "
+                f"{applied.get('_flow', '?')} configuration"
+                + (", cylindrical cells" if
+                   applied.get("_cyl") else "")
+                + f", W = {applied.get('W_tank', 0)*1000:.0f} mm"
+                  f", H = {applied.get('H_tank', 0)*1000:.0f} mm"
+                  f", Q = {applied.get('Q_eval', applied.get('Q_cell', 0)):.3g} W.")
+        except Exception as e:
+            st.error(f"{su.name}: {e}")
+            applied = None
+    if applied:
+        Wt = applied.get("W_tank", Wt)
+        Ht = applied.get("H_tank", Ht)
+        b_w = applied.get("b_w", b_w)
+        b_h = applied.get("b_h", b_h)
+        n_rows = int(applied.get("n_rows_", n_rows))
+        gap = applied.get("gap_bot", gap)
+        Lz = applied.get("L_z", Lz)
+        Q = applied.get("Q_eval", Q)
+        u_fan = applied.get("u_fan", u_fan)
+        T_in = applied.get("T_in", T_in)
+        Ttop = applied.get("T_top", Ttop)
+        km = applied.get("k_mult", km)
+        P["k_oil"] = applied.get("k_oil", P["k_oil"])
+        P["rho_oil"] = applied.get("rho_oil", P["rho_oil"])
+        P["cp_oil"] = applied.get("cp_oil", P["cp_oil"])
+        fan = applied.get("_flow") == "fan"
+        top_fixed = applied.get("_flow") == "top"
+        use_pipes = applied.get("r_pipe", 0) > 0
+        _ser = (n_rows == 1 and not applied.get("_cyl"))
+    else:
+        _ser = (n_rows == 1
+                and not gmode.startswith("Battery"))
     ups = st.file_uploader(
         "Upload the exported file(s)", type=["txt", "dat", "csv"],
         accept_multiple_files=True, key="fx_up")
@@ -3510,7 +3669,7 @@ def fea_tab(d, g, fl, cool_df, loop):
                                 xc_, gap,
                                 Q / (n_rows * b_w * b_h * Lz),
                                 k_eff, Ttop,
-                                series=(n_rows == 1))
+                                series=_ser)
         st.session_state.setdefault("fx_fields", {})[up.name] = (
             fx_, fy_, fT_)
         _fchecks.append((up.name, finf, m))
@@ -3607,20 +3766,6 @@ def fea_tab(d, g, fl, cool_df, loop):
                   f"{m['rms_out']:.3f} °C")
         g4.metric("Worst point (outside bar)",
                   f"{m['max_out']:.3f} °C")
-        wp3_like = (abs(Wt - 0.025) < 1e-4 and
-                    abs(Ht - 0.030) < 1e-4 and
-                    n_rows == 1 and
-                    abs(b_w - 0.005) < 1e-4 and
-                    abs(b_h - 0.005) < 1e-4 and
-                    abs(Q - 0.75) < 0.02)
-        if wp3_like and abs(km - 1.0) < 1e-6:
-            nu = (m["T_peak"] - Ttop) / 0.72
-            st.markdown(
-                f"**Against the reference CFD (Fluent):** conduction-only peak "
-                f"rise {m['T_peak']-Ttop:.2f} °C vs Fluent's 0.72 "
-                f"°C - the buoyant circulation is worth a factor "
-                f"of **{nu:.1f}** here. Raise the k-multiplier to "
-                f"about {nu:.1f} and re-export to emulate it.")
         if m["Ts"] is None:
             st.info("Multi-row array: the single-strip series "
                     "does not apply, so the verdict above judges "
@@ -4770,7 +4915,15 @@ def smoke():
     assert '"n_rows_", "4"' in _jr2 and \
         "q_v*W_bars/W_tank" in _jr2 and \
         "Q_cell/(W_bars*b_h*L_z)" in _jr2
-    assert '"blk_b4"' in _jr3 and "(3/2.0)*pitch_x" in _jr3
+    _jc3 = _FX.comsol_basic_3d(dict(_pr, cls="iplX",
+                                    cyl_cells=True, n_cells=6,
+                                    pitch_y=0.026))
+    assert _jc3.count('"Cylinder"') == 4 * 6 and \
+        '"cb4_6"' in _jc3 and 'set("r", "b_w/2")' in _jc3
+    assert '"V_bat", "n_tot_*pi*(b_w/2)^2*b_h"' in _jc3 and \
+        "Q_cell/(b_h*W_tank*L_z)" in _jc3 and \
+        "iplX_settings.txt" in _jc3 and "Q_eval=" in _jc3
+    assert '"blk2"' in _jr3 and '"cb1_1"' not in _jr3
     _j1 = _FX.comsol_basic_2d(dict(_pb, cls="iplX"))
     assert '"r_b1"' in _j1 and '"r_b2"' not in _j1
     # mean-profile identity: 4 rows at width d == one bar at 4d
@@ -4783,8 +4936,15 @@ def smoke():
                               0.6, 997.0, 4180.0, 0.001, 25.0)
     assert np.allclose(_T4, _T1) and \
         abs(_i4["T_out"] - _i1["T_out"]) < 1e-12
-    print("multi-row: exporter markers + total-width mean "
-          "identity OK")
+    import re as _re
+    _lines = _re.findall(r'pw_\.println\("([^"]*)"\);', _jc3)
+    _S = parse_run_settings("\n".join(_lines))
+    assert _S["_dim"] == 3 and _S["_cyl"] and \
+        _S["n_cells_"] == 6 and "Q_eval" in _S
+    _S2 = parse_run_settings(_jc3)
+    assert _S2["_flow"] in ("top", "fan", "sealed")
+    print("multi-row: exporter markers, total-width mean "
+          "identity, settings echo round-trip OK")
     # rectangular fan analytics: closed form vs FD, bw != bh
     def _fdr(WW, HH, bw_, bh_, gg, qq, kk, rr, cc, uu, Ti,
              N=3000):
