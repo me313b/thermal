@@ -41,7 +41,7 @@ def comsol_basic_2d(P):
     k_bat, rho_bat, cp_bat, k_oil, rho_oil, cp_oil, T0, t_end,
     t_step, dTdt_pred, oil_name, bar_name, top_fixed (bool),
     T_top, k_mult, steady (bool), cls (class/file name)."""
-    cls = P.get("cls", "ipl_basic_2d")
+    cls = P.get("cls", "ipl2d")
     top_fixed = bool(P.get("top_fixed", True))
     steady = bool(P.get("steady", top_fixed))
     build_only = bool(P.get("build_only", False))
@@ -77,7 +77,7 @@ def comsol_basic_2d(P):
  * GUI alternative after compiling: COMSOL Desktop > File > Open,
  * file type "Compiled Model File for Java (*.class)".
  * Either way COMSOL compiles with its bundled Java,
- * Saves {cls}.mph and writes {cls}_results.txt.
+ * Saves {cls}.mph and writes {cls}_summary.txt.
  * COMSOL 6.x Java API, heat transfer in solids only.
  */
 import com.comsol.model.*;
@@ -323,7 +323,7 @@ __PG2__
         '    model.result().export().create("texp1", "Table");',
         '    model.result().export("texp1").set("table", "tbl1");',
         '    model.result().export("texp1").set("filename",',
-        '        "{cls}_results.txt");',
+        '        "{cls}_summary.txt");',
         '    // full 2D temperature field on a regular grid - this is',
         '    // the file the app\'s "Check a COMSOL run" box reads',
         '    model.result().export().create("data1", "Data");',
@@ -338,7 +338,7 @@ __PG2__
         '    model.result().export("data1").set("regulargridy2",'
         ' 73);',
         '    model.result().export("data1").set("filename",',
-        '        "{cls}_field.txt");']) + '\n'
+        '        "{cls}_upload_to_app.txt");']) + '\n'
     _run = '\n'.join([
         '    model.result().numerical("gev1").setResult();',
         '    model.result().export("texp1").run();',
@@ -365,8 +365,8 @@ def comsol_basic_3d(P):
     2D analytical series is the EXACT solution here too and the 3D
     field must match the 2D field to solver tolerance - the exported
     4-column field lets the app measure that z-uniformity directly.
-    Same P keys as comsol_basic_2d; cls should end in _3d."""
-    cls = P.get("cls", "ipl_wp3_report_3d")
+    Same P keys as comsol_basic_2d."""
+    cls = P.get("cls", "ipl3d")
     top_fixed = bool(P.get("top_fixed", True))
     steady = bool(P.get("steady", top_fixed))
     build_only = bool(P.get("build_only", False))
@@ -389,8 +389,8 @@ def comsol_basic_3d(P):
  * Run (macOS):
  *   /Applications/COMSOL64/Multiphysics/bin/comsol compile {cls}.java
  *   /Applications/COMSOL64/Multiphysics/bin/comsol batch -inputfile {cls}.class
- * Exports {cls}_field.txt (x y z T on a 61 x 21 x 73 grid) and
- * {cls}_results.txt automatically{' after you press Compute (build-only file).' if build_only else '.'}
+ * Exports {cls}_upload_to_app.txt (x y z T on a 61 x 21 x 73 grid) and
+ * {cls}_summary.txt automatically{' after you press Compute (build-only file).' if build_only else '.'}
  */
 import com.comsol.model.*;
 import com.comsol.model.util.*;
@@ -567,7 +567,7 @@ public class {cls} {{
     model.result().export().create("texp1", "Table");
     model.result().export("texp1").set("table", "tbl1");
     model.result().export("texp1").set("filename",
-        "{cls}_results.txt");
+        "{cls}_summary.txt");
     model.result().export().create("data1", "Data");
     model.result().export("data1").set("expr", new String[]{{"T"}});
     model.result().export("data1").set("unit",
@@ -577,7 +577,7 @@ public class {cls} {{
     model.result().export("data1").set("regulargridy3", 21);
     model.result().export("data1").set("regulargridz3", 73);
     model.result().export("data1").set("filename",
-        "{cls}_field.txt");
+        "{cls}_upload_to_app.txt");
 """
     if not build_only:
         s += ('    model.result().numerical("gev1").setResult();\n'

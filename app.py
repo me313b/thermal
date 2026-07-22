@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.14"
+APP_VERSION = "v10.16"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -2767,14 +2767,14 @@ def fea_tab(d, g, fl, cool_df, loop):
     cfl = fluid_dict(cool_df[cool_df["name"] == fx_fl].iloc[0])
     P = fea_p_basic(cfl, Wt, Ht, a, xoff, gap, Lz, Q, kb, rb, cb,
                     T0, tend, max(tend / 30.0, 10.0), 0.0, 25.0)
-    _cls = ("ipl_wp3_report" if top_fixed else "ipl_sealed_check")
-    if dim3:
-        _cls += "_3d"
-    if build_only:
-        _cls += "_build"
+    # fixed names by request: every 2D export is ipl2d, every 3D
+    # export is ipl3d, whatever the variant - the header states the
+    # configuration, the name never changes, and the .mph / _field /
+    # _results files inherit it. (Java forbids a class named 2d: an
+    # identifier cannot start with a digit, hence the ipl prefix.)
     P.update(bar_name=mat, top_fixed=top_fixed, T_top=Ttop,
              k_mult=km, steady=steady, build_only=build_only,
-             cls=_cls)
+             cls="ipl3d" if dim3 else "ipl2d")
     qv = Q / (a * a * Lz)
 
     cx1, cx2 = st.columns([1.4, 1])
@@ -2880,8 +2880,8 @@ def fea_tab(d, g, fl, cool_df, loop):
     st.markdown("##### Check a COMSOL run against the analytics")
     st.markdown(
         "The solved export writes the full 2D temperature field to "
-        f"`{P['cls']}_field.txt` automatically. Drop that file here "
-        "(the `_results.txt` table too, if you like) and the app "
+        f"`{P['cls']}_upload_to_app.txt` automatically. Drop that file here "
+        "(the `_summary.txt` table too, if you like) and the app "
         "judges the run: first the **rigorous anchors** - the top "
         "row must equal $T_{top}$, the plane-mean temperature must "
         "be flat below the bar and exactly linear above it with "
@@ -3933,6 +3933,7 @@ def smoke():
     _j1 = _FX.comsol_basic_2d(_pb)
     assert "TemperatureBoundary" in _j1 and "Stationary" in _j1 \
         and "intTop(ht.ntflux)" in _j1 and "Q_cell/L_z" in _j1
+    assert "_upload_to_app.txt" in _j1 and "_summary.txt" in _j1
     _ps = dict(_pb, top_fixed=False, steady=False,
                cls="ipl_sealed_check")
     _j2 = _FX.comsol_basic_2d(_ps)

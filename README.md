@@ -587,6 +587,14 @@ thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
 
+## v10.16
+
+Self-explaining export names, prompted by "which ones do I upload?". The two files the app's checker needs are now called <cls>_upload_to_app.txt (the full field - this is the one to drop into the FEA tab), and the one-line evaluation table is <cls>_summary.txt (optional; the checker displays it if included). ipl2d/ipl3d .java/.class/.mph names unchanged, so the run commands stay the same. First real-data verdict, run on the user's ipl2d/ipl3d fields: both energy anchors at machine zero (2.2e-10 W/m and 9.6e-13 W), 2D anchors flat to 0.1 mK with 0.00% slope error, series agreement 111 mK RMS outside the bar, 2D-vs-3D 32 mK RMS; 3D depth variation 175 mK identified as 3D mesh discretisation noise, not physics; implied convective enhancement vs Fluent = 4.2 -> recommended k-multiplier for the next export.
+
+## v10.15
+
+Fixed file names, by request. Every 2D export is now ipl2d.java and every 3D export ipl3d.java, regardless of variant (report / sealed / build-only) - the header comment states the configuration, the name never changes, and the .mph, _field.txt and _results.txt inherit it, so the run commands are permanently: comsol compile ipl2d.java && comsol batch -inputfile ipl2d.class (likewise ipl3d). The literal names 2d.java / 3d.java are impossible in Java because a class identifier cannot begin with a digit; ipl2d / ipl3d is the closest legal form. Note: the container reset before this release; the change is a name-string swap over the v10.14 templates, verified structurally in Python (class/save/field-name consistency), with the javac stub-compile skipped this once because the fresh sandbox could not install a JDK in time.
+
 ## v10.14
 
 The 3D rung, with its comparisons built in.
