@@ -587,6 +587,14 @@ thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
 
+## v10.17
+
+Both dimensions, always, and the Fluent labelling corrected.
+
+- The FEA tab now generates BOTH COMSOL files on every visit from the same settings - ipl2d.java and ipl3d.java side by side as two primary downloads; the dimension selector is gone. The anchors line shows both forms (W/m for 2D, W total for 3D).
+- Wording corrected throughout: these are COMSOL models of the WP3 benchmark case; Ansys Fluent appears only as what it is - the reference CFD from the WP3 report used for the Nusselt extraction. Preset renamed "Load the WP3 case"; material option renamed "Aluminium (WP3 values)"; top boundary option renamed "Fixed temperature (WP3 case)".
+- The checker becomes an explicit three-way comparison: upload ipl2d_upload_to_app.txt and ipl3d_upload_to_app.txt together and, after the per-file verdicts, a summary table lists both runs side by side - bar peak, RMS and worst vs the analytical series, energy-anchor pass/fail, depth variation - plus the analytical bar estimate and pairwise FEA-vs-FEA difference maps (RMS and worst in mK). The comparison store resets per upload batch so stale fields cannot leak in.
+
 ## v10.16
 
 Self-explaining export names, prompted by "which ones do I upload?". The two files the app's checker needs are now called <cls>_upload_to_app.txt (the full field - this is the one to drop into the FEA tab), and the one-line evaluation table is <cls>_summary.txt (optional; the checker displays it if included). ipl2d/ipl3d .java/.class/.mph names unchanged, so the run commands stay the same. First real-data verdict, run on the user's ipl2d/ipl3d fields: both energy anchors at machine zero (2.2e-10 W/m and 9.6e-13 W), 2D anchors flat to 0.1 mK with 0.00% slope error, series agreement 111 mK RMS outside the bar, 2D-vs-3D 32 mK RMS; 3D depth variation 175 mK identified as 3D mesh discretisation noise, not physics; implied convective enhancement vs Fluent = 4.2 -> recommended k-multiplier for the next export.

@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.16"
+APP_VERSION = "v10.17"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -2665,37 +2665,33 @@ def cases_tab(d, g, fl, res, cool_df, loop):
 
 
 def fea_tab(d, g, fl, cool_df, loop):
-    st.markdown("#### FEA - the basic module (COMSOL, plane 2D)")
+    st.markdown("#### FEA - the basic module (COMSOL, 2D + 3D)")
     st.markdown(
-        "Matched to your Fluent report (ODYSSEV-WP3): a long **heat "
-        "bar** - the report's battery surrogate is a 5 mm aluminium "
-        "bar, not a battery - inside a liquid tank, plane 2D, per "
-        "metre of depth. Boundary conditions as the report: sides "
-        "and bottom adiabatic, and the **top either held at a fixed "
-        "temperature** (the report's 25 °C sink, so a steady state "
-        "exists) **or sealed** (adiabatic, transient only). The "
-        "liquid is a conducting solid; the buoyant circulation "
-        "Fluent resolves is NOT solved here - instead the liquid "
-        "has an effective-k multiplier: the value of $k_{mult}$ "
-        "that reproduces Fluent's field IS the Nusselt number of "
-        "that circulation, which is exactly what this app's "
-        "correlations predict. Every input is a named parameter in "
-        "the exported file.")
+        "**COMSOL** conduction models of the WP3 benchmark case: a "
+        "long **heat bar** (a 5 mm aluminium bar as the battery "
+        "surrogate) inside a liquid tank. Sides and bottom "
+        "adiabatic; the **top either held at a fixed temperature** "
+        "(25 °C sink, so a steady state exists) **or sealed** "
+        "(adiabatic, transient only). Every visit generates BOTH "
+        "files from the same settings - `ipl2d.java` (plane "
+        "section, per metre) and `ipl3d.java` (the section "
+        "extruded the full depth) - so 2D, 3D and the analytical "
+        "solution can all be compared below. The liquid is a "
+        "conducting solid; buoyant circulation is not solved - "
+        "the effective-k multiplier stands in for it, and the "
+        "value that reproduces the reference CFD (Ansys Fluent, "
+        "from the WP3 report) IS the circulation's Nusselt number. "
+        "Every input is a named parameter in the exported files.")
 
     def _wp3():
         st.session_state.update(fxb_w=25.0, fxb_h=30.0, fxb_a=5.0, fxb_lz=300.0,
                   fxb_gap=10.0, fxb_xo=0.0, fxb_q=0.75, fxb_t0=25.0,
-                  fxb_mat="Aluminium (Fluent defaults)",
+                  fxb_mat="Aluminium (WP3 values)",
                   fx_fluid="Deionized water",
-                  fxb_top="Fixed temperature (as the report)",
+                  fxb_top="Fixed temperature (WP3 case)",
                   fxb_ttop=25.0, fxb_km=1.0)
-    st.button("Match the Fluent WP3 report (one click)",
+    st.button("Load the WP3 case (one click)",
               on_click=_wp3, type="primary", key="fxb_preset")
-    dim3 = st.radio("Model dimension",
-                    ["2D (plane section)",
-                     "3D (section extruded the full depth, as the "
-                     "report)"],
-                    horizontal=True, key="fxb_dim").startswith("3D")
 
     c1, c2, c3, c4 = st.columns(4)
     Wt = c1.slider("Tank width [mm]", 10.0, 400.0, 25.0, 1.0,
@@ -2716,7 +2712,7 @@ def fea_tab(d, g, fl, cool_df, loop):
     T0 = c4.slider("Initial temperature [°C]", 5.0, 50.0, 25.0, 1.0,
                    key="fxb_t0")
     c1, c2, c3, c4 = st.columns(4)
-    mat = c1.selectbox("Bar material", ["Aluminium (Fluent defaults)",
+    mat = c1.selectbox("Bar material", ["Aluminium (WP3 values)",
                                         "Battery jelly-roll",
                                         "Custom"], key="fxb_mat")
     fx_fl = c2.selectbox("Liquid", list(cool_df["name"]),
@@ -2724,7 +2720,7 @@ def fea_tab(d, g, fl, cool_df, loop):
                                     "Deionized water").idxmax()),
                          key="fx_fluid")
     topbc = c3.selectbox("Top boundary",
-                         ["Fixed temperature (as the report)",
+                         ["Fixed temperature (WP3 case)",
                           "Adiabatic (sealed)"], key="fxb_top")
     top_fixed = topbc.startswith("Fixed")
     if top_fixed:
@@ -2740,8 +2736,8 @@ def fea_tab(d, g, fl, cool_df, loop):
                    "study is Transient.")
     if mat.startswith("Alum"):
         kb, rb, cb = 202.4, 2719.0, 871.0
-        st.caption("Aluminium at Fluent's defaults: k 202.4 W/m·K, "
-                   "ρ 2719 kg/m³, cp 871 J/kg·K.")
+        st.caption("Aluminium at the WP3 report's values: k 202.4 "
+                   "W/m·K, ρ 2719 kg/m³, cp 871 J/kg·K.")
     elif mat.startswith("Batt"):
         kb, rb, cb = 0.9, 2500.0, 900.0
         st.caption("Jelly-roll-like: k 0.9 (transverse), ρ 2500, "
@@ -2767,14 +2763,11 @@ def fea_tab(d, g, fl, cool_df, loop):
     cfl = fluid_dict(cool_df[cool_df["name"] == fx_fl].iloc[0])
     P = fea_p_basic(cfl, Wt, Ht, a, xoff, gap, Lz, Q, kb, rb, cb,
                     T0, tend, max(tend / 30.0, 10.0), 0.0, 25.0)
-    # fixed names by request: every 2D export is ipl2d, every 3D
-    # export is ipl3d, whatever the variant - the header states the
-    # configuration, the name never changes, and the .mph / _field /
-    # _results files inherit it. (Java forbids a class named 2d: an
-    # identifier cannot start with a digit, hence the ipl prefix.)
+    # fixed names: every 2D export is ipl2d, every 3D export is
+    # ipl3d, whatever the variant - both are generated on every
+    # visit from the same settings.
     P.update(bar_name=mat, top_fixed=top_fixed, T_top=Ttop,
-             k_mult=km, steady=steady, build_only=build_only,
-             cls="ipl3d" if dim3 else "ipl2d")
+             k_mult=km, steady=steady, build_only=build_only)
     qv = Q / (a * a * Lz)
 
     cx1, cx2 = st.columns([1.4, 1])
@@ -2828,28 +2821,28 @@ def fea_tab(d, g, fl, cool_df, loop):
         st.metric("Volumetric heat q_v", f"{qv:,.0f} W/m³")
         st.caption("The report uses 100,000 W/m³ - the preset lands "
                    "there exactly (0.75 W over 5×5×300 mm).")
-        if dim3:
-            st.caption("3D note: the section is extruded the full "
-                       "depth with adiabatic ends, so the exact "
-                       "solution is z-invariant - the 3D run must "
-                       "match the 2D field to solver noise, and the "
-                       "checker below measures that from the 3D "
-                       "export directly.")
+        st.caption("3D note: the section is extruded the full "
+                   "depth with adiabatic ends, so the exact "
+                   "solution is z-invariant - the 3D run must "
+                   "match the 2D field to solver noise, and the "
+                   "checker below measures that from the 3D "
+                   "export directly.")
         if top_fixed:
-            st.metric("Anchor at the solution",
-                      f"top flux = {Q:.2f} W total" if dim3 else
-                      f"top flux = {Q/Lz:.2f} W/m")
+            st.metric("Anchors at the solution",
+                      f"top flux = {Q/Lz:.2f} W/m (2D) · "
+                      f"{Q:.2f} W total (3D)")
             st.markdown(
                 "**Correctness check:** at steady state every watt "
-                "must leave through the fixed top, so the exported "
-                "model integrates the top flux and tabulates its "
-                "deviation from $Q/L_z$. **Comparison to Fluent:** "
-                "with $k_{mult}=1$ this conduction-only model will "
-                "read hotter than Fluent's 25.7 °C, because Fluent "
-                "resolves the ~0.85 mm/s buoyant plume. Raise "
-                "$k_{mult}$ until the fields match - that value is "
-                "the circulation's Nusselt number, the quantity "
-                "this app's correlations predict.")
+                "must leave through the fixed top; both exported "
+                "models integrate that flux and tabulate its "
+                "deviation. **Against the reference CFD** (Ansys "
+                "Fluent, from the WP3 report): with $k_{mult}=1$ "
+                "these conduction-only models read hotter than the "
+                "CFD's 25.7 °C, because the CFD resolves the "
+                "~0.85 mm/s buoyant plume. Raise $k_{mult}$ until "
+                "the fields match - that value is the circulation's "
+                "Nusselt number, the quantity this app's "
+                "correlations predict.")
         else:
             st.metric("Exact heating slope",
                       f"{P['dTdt_pred']*60:.4f} °C/min")
@@ -2858,42 +2851,48 @@ def fea_tab(d, g, fl, cool_df, loop):
                 "volume-average temperature must climb this exact "
                 "line; the exported model tabulates its own "
                 "deviation at every step.")
-    jav = (fea_export.comsol_basic_3d(P) if dim3 else
-           fea_export.comsol_basic_2d(P))
-    st.download_button(f"COMSOL model file ({P['cls']}.java)",
-                       data=jav, file_name=f"{P['cls']}.java",
-                       mime="text/plain", use_container_width=True,
-                       type="primary", key="fxb_dl")
+    jav2 = fea_export.comsol_basic_2d(dict(P, cls="ipl2d"))
+    jav3 = fea_export.comsol_basic_3d(dict(P, cls="ipl3d"))
+    cdl1, cdl2 = st.columns(2)
+    cdl1.download_button("COMSOL 2D model (ipl2d.java)", data=jav2,
+                         file_name="ipl2d.java", mime="text/plain",
+                         use_container_width=True, type="primary",
+                         key="fxb_dl2")
+    cdl2.download_button("COMSOL 3D model (ipl3d.java)", data=jav3,
+                         file_name="ipl3d.java", mime="text/plain",
+                         use_container_width=True, type="primary",
+                         key="fxb_dl3")
     st.caption(
-        "Two steps on macOS (COMSOL 6.x batch takes .mph or a "
-        "compiled .class, not raw .java): "
-        f"`comsol compile {P['cls']}.java` then "
-        f"`comsol batch -inputfile {P['cls']}.class` - both from "
-        "/Applications/COMSOLxx/Multiphysics/bin/. Or after "
-        "compiling, open the .class straight in the Desktop via "
-        "File > Open (type: Compiled Model File for Java). The run "
-        "writes the results table (deviation column included) and "
-        "saves the .mph. FEMM's steady solver can twin the "
+        "Both files carry the same settings. Run each in two steps "
+        "(COMSOL 6.x batch takes .mph or a compiled .class, not "
+        "raw .java): `comsol compile ipl2d.java` then `comsol "
+        "batch -inputfile ipl2d.class`, and likewise ipl3d. Each "
+        "run writes <name>_summary.txt and <name>_upload_to_app.txt "
+        "and saves the .mph. The 3D solve takes minutes and its "
+        "field file is a few MB. FEMM's steady solver can twin the "
         "fixed-top case as the next cross-check rung if wanted.")
 
     st.markdown("---")
     st.markdown("##### Check a COMSOL run against the analytics")
     st.markdown(
-        "The solved export writes the full 2D temperature field to "
-        f"`{P['cls']}_upload_to_app.txt` automatically. Drop that file here "
-        "(the `_summary.txt` table too, if you like) and the app "
-        "judges the run: first the **rigorous anchors** - the top "
-        "row must equal $T_{top}$, the plane-mean temperature must "
-        "be flat below the bar and exactly linear above it with "
-        "slope $Q'/(kW)$ (pure energy conservation, no "
-        "approximation) - then agreement with the **analytical "
-        "series solution** of the same Poisson problem, compared "
-        "outside the bar footprint. Checked against the case as "
-        "currently configured above, so set the sliders (or press "
-        "the WP3 preset) to match the run.")
+        "Each solved run writes its full temperature field "
+        "automatically: `ipl2d_upload_to_app.txt` and "
+        "`ipl3d_upload_to_app.txt`. **Drop BOTH here for the full "
+        "three-way comparison** - 2D vs 3D vs analytical - or "
+        "either alone (the `_summary.txt` tables are optional and "
+        "just displayed). For every field the app applies the "
+        "**rigorous anchors** first - top row equal to $T_{top}$, "
+        "plane-mean flat below the bar and exactly linear above it "
+        "with slope $Q'/(kW)$; pure energy conservation, no "
+        "approximation - then compares against the **analytical "
+        "series solution** outside the bar footprint. Checked "
+        "against the case configured above, so press the WP3 "
+        "preset (or match the sliders) before uploading.")
     ups = st.file_uploader(
         "Upload the exported file(s)", type=["txt", "dat", "csv"],
         accept_multiple_files=True, key="fx_up")
+    st.session_state["fx_fields"] = {}
+    _fchecks = []
     for up in ups or []:
         try:
             txt = up.read().decode("utf-8", errors="replace")
@@ -2934,6 +2933,7 @@ def fea_tab(d, g, fl, cool_df, loop):
                             Q / (a * a * Lz), k_eff, Ttop)
         st.session_state.setdefault("fx_fields", {})[up.name] = (
             fx_, fy_, fT_)
+        _fchecks.append((up.name, finf, m))
         if m["anchors_ok"]:
             st.success(
                 f"{up.name}: energy anchors PASS - top row within "
@@ -3004,29 +3004,6 @@ def fea_tab(d, g, fl, cool_df, loop):
                                     font=dict(size=12), x=0.02))
         st.plotly_chart(fp, width='stretch',
                         key=f"fx_prof_{up.name}")
-        _flds = st.session_state.get("fx_fields", {})
-        _others = [(n_, v_) for n_, v_ in _flds.items()
-                   if n_ != up.name and v_[2].shape == fT_.shape]
-        if _others:
-            n2, (x2, y2, T2) = _others[-1]
-            dd = fT_ - T2
-            st.markdown(
-                f"**Cross-comparison {up.name} vs {n2}** (FEA vs "
-                f"FEA on matching grids): RMS "
-                f"**{float(np.sqrt(np.nanmean(dd**2))):.4f} °C**, "
-                f"worst point "
-                f"**{float(np.nanmax(np.abs(dd))):.4f} °C**.")
-            fgd = go.Figure(go.Heatmap(
-                x=fx_ * 1000, y=fy_ * 1000, z=dd,
-                colorscale="RdBu", colorbar=dict(thickness=10)))
-            fgd.update_layout(height=300, margin=dict(l=6, r=6,
-                              t=28, b=6),
-                              title=dict(text=f"{up.name} - {n2} "
-                                         "[°C]", font=dict(size=12),
-                                         x=0.02),
-                              yaxis=dict(scaleanchor="x"))
-            st.plotly_chart(fgd, width='stretch',
-                            key=f"fx_x_{up.name}")
         st.caption(
             "Caveat stated once and honestly: the series assumes "
             "uniform liquid conductivity, so INSIDE the aluminium "
@@ -3035,6 +3012,54 @@ def fea_tab(d, g, fl, cool_df, loop):
             "footprint and the bar estimate above is the series "
             "average over it. The mean-profile anchor carries no "
             "such caveat - it is exact.")
+
+    if len(_fchecks) >= 2:
+        st.markdown("##### Three-way comparison: 2D · 3D · "
+                    "analytical")
+        rows = []
+        for nm_, fi_, mm_ in _fchecks:
+            rows.append((nm_,
+                         "3D" if fi_["kind"] == "3d" else "2D",
+                         f"{mm_['T_peak']:.3f}",
+                         f"{mm_['rms_out']*1000:.0f}",
+                         f"{mm_['max_out']*1000:.0f}",
+                         "PASS" if mm_["anchors_ok"] else "FAIL",
+                         (f"{fi_['zvar']*1000:.0f}"
+                          if fi_.get("zvar") is not None else "-")))
+        st.markdown(
+            "| file | kind | bar peak [°C] | RMS vs analytical "
+            "[mK] | worst vs analytical [mK] | energy anchors | "
+            "depth variation [mK] |\n|---|---|---|---|---|---|---|"
+            "\n" + "\n".join("| %s | %s | %s | %s | %s | %s | %s |"
+                              % r for r in rows))
+        st.markdown(
+            "Analytical bar estimate (series average over the "
+            f"footprint): **{_fchecks[0][2]['T_bar_series']:.3f} "
+            "°C** - remember it overshoots the near-isothermal "
+            "aluminium bar by construction.")
+        _flds = list(st.session_state.get("fx_fields", {}).items())
+        for i_ in range(len(_flds)):
+            for j_ in range(i_ + 1, len(_flds)):
+                nA, (xA, yA, TA) = _flds[i_]
+                nB, (xB, yB, TB) = _flds[j_]
+                if TA.shape != TB.shape:
+                    continue
+                dd = TA - TB
+                st.markdown(
+                    f"**{nA} vs {nB}** (FEA vs FEA, same grid): "
+                    f"RMS **{float(np.sqrt(np.nanmean(dd**2)))*1000:.0f} mK**, "
+                    f"worst **{float(np.nanmax(np.abs(dd)))*1000:.0f} mK**.")
+                fgd = go.Figure(go.Heatmap(
+                    x=xA * 1000, y=yA * 1000, z=dd,
+                    colorscale="RdBu",
+                    colorbar=dict(thickness=10)))
+                fgd.update_layout(
+                    height=300, margin=dict(l=6, r=6, t=28, b=6),
+                    title=dict(text=f"{nA} − {nB} [°C]",
+                               font=dict(size=12), x=0.02),
+                    yaxis=dict(scaleanchor="x"))
+                st.plotly_chart(fgd, width='stretch',
+                                key=f"fx_x_{i_}_{j_}")
 
 
 def system_tab(d, g, fl, res, masses, loop, chil, Q_duty, C_steady):
