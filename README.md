@@ -587,6 +587,15 @@ thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
 
+## v10.14
+
+The 3D rung, with its comparisons built in.
+
+- **comsol_basic_3d**: the WP3 section extruded the full 300 mm depth - tank and bar as Blocks, ends/sides/bottom adiabatic, top FACE fixed at T_top (or sealed transient), same parameters, materials, k-multiplier and build-only mode as 2D. The steady anchor becomes total: integrated heat out of the top face must equal Q_cell (0.75 W), tabulated with its deviation. Exports the FULL 3D field automatically: <cls>_field.txt with x y z T on a 61 x 21 x 73 regular grid, plus the results table and the .mph. The FEA tab gains a dimension selector; file/class names get a _3d suffix.
+- **The physics that makes 3D checkable**: geometry and BCs are z-invariant, so the exact solution is the 2D field at every depth - the 2D analytical series IS the exact analytical solution of the 3D problem, and the 3D FEA must match the 2D FEA to solver noise (the report's Fluent pair differed by ~20 mK). The parser now reads 4-column exports, measures the worst variation across the depth at any point (reported in mK as the direct 2D-vs-3D agreement), slices mid-depth, and runs the identical rigorous anchors and series comparison on the slice.
+- **Cross-comparison**: upload a 2D field and a 3D field together and the checker also differences the two FEA fields directly on matching grids - RMS, worst point, and a difference map - so numerical-vs-numerical sits beside numerical-vs-analytical.
+- Smoke: 3D generator markers, a tiled 4-column roundtrip proving z-invariance detection at 0 and a perturbed depth plane flagged at 0.20 K.
+
 ## v10.13
 
 Close the loop: COMSOL exports the whole 2D field automatically; the app judges the run and plots numerical vs analytical.

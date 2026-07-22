@@ -355,3 +355,247 @@ __PG2__
          .replace("__PG2__", pg2)
          .replace("{cls}", cls))
     return s
+
+
+def comsol_basic_3d(P):
+    """3D twin of the basic module: the same section extruded L_z in
+    depth (the report's 25 x 30 x 300 mm tank with the 5 x 5 x 300 mm
+    bar). Ends adiabatic, sides and bottom adiabatic, top FACE fixed
+    at T_top (or sealed -> transient). Physics is z-invariant, so the
+    2D analytical series is the EXACT solution here too and the 3D
+    field must match the 2D field to solver tolerance - the exported
+    4-column field lets the app measure that z-uniformity directly.
+    Same P keys as comsol_basic_2d; cls should end in _3d."""
+    cls = P.get("cls", "ipl_wp3_report_3d")
+    top_fixed = bool(P.get("top_fixed", True))
+    steady = bool(P.get("steady", top_fixed))
+    build_only = bool(P.get("build_only", False))
+    qv = P["Q_cell"] / (P["a_cell"] ** 2 * P["L_z"])
+    s = f"""/*
+ * BASIC MODULE in 3D - the WP3 section extruded {P['L_z']*1000:.0f} mm.
+ * {DISCLAIMER}
+ *
+ * Tank {P['W_tank']*1000:.0f} x {P['L_z']*1000:.0f} x {P['H_tank']*1000:.0f} mm (W x depth x H);
+ * bar {P['a_cell']*1000:.1f} mm square x full depth, {P['gap_bot']*1000:.0f} mm
+ * off the floor; q_v = {qv:.3g} W/m3 ({P['Q_cell']:.3f} W total).
+ * BCs: ends, sides and bottom adiabatic; top FACE {'fixed at T_top - steady state exists' if top_fixed else 'adiabatic (sealed) - transient only'}.
+ *
+ * PHYSICS NOTE: geometry and BCs are z-invariant, so the exact
+ * solution is the 2D field at every depth. The app checks three
+ * things from the exported field: z-uniformity (should be solver
+ * noise), the mid-depth slice against the 2D analytical series, and
+ * {'the total heat out of the top face against Q_cell (printed with its deviation below).' if top_fixed else 'the sealed adiabatic heating line for the volume average.'}
+ *
+ * Run (macOS):
+ *   /Applications/COMSOL64/Multiphysics/bin/comsol compile {cls}.java
+ *   /Applications/COMSOL64/Multiphysics/bin/comsol batch -inputfile {cls}.class
+ * Exports {cls}_field.txt (x y z T on a 61 x 21 x 73 grid) and
+ * {cls}_results.txt automatically{' after you press Compute (build-only file).' if build_only else '.'}
+ */
+import com.comsol.model.*;
+import com.comsol.model.util.*;
+import java.io.IOException;
+
+public class {cls} {{
+  public static Model run() throws IOException {{
+    Model model = ModelUtil.create("Model");
+"""
+    prm = [
+        ("W_tank", f"{P['W_tank']}[m]", "tank width (x)"),
+        ("L_z", f"{P['L_z']}[m]", "tank depth (y)"),
+        ("H_tank", f"{P['H_tank']}[m]", "tank height (z)"),
+        ("a_cell", f"{P['a_cell']}[m]", "bar square side"),
+        ("x_off", f"{P['x_off']}[m]", "bar offset from centreline"),
+        ("gap_bot", f"{P['gap_bot']}[m]", "bar bottom above floor"),
+        ("Q_cell", f"{P['Q_cell']}[W]", "total bar heat"),
+        ("q_v", "Q_cell/(a_cell^2*L_z)", "volumetric heat"),
+        ("k_bat", f"{P['k_bat']}[W/(m*K)]", "bar conductivity"),
+        ("rho_bat", f"{P['rho_bat']}[kg/m^3]", "bar density"),
+        ("cp_bat", f"{P['cp_bat']}[J/(kg*K)]", "bar cp"),
+        ("k_oil", f"{P['k_oil']}[W/(m*K)]",
+         f"liquid conductivity ({P['oil_name']})"),
+        ("rho_oil", f"{P['rho_oil']}[kg/m^3]", "liquid density"),
+        ("cp_oil", f"{P['cp_oil']}[J/(kg*K)]", "liquid cp"),
+        ("T0_C", f"{P['T0']}[degC]", "initial temperature"),
+        ("t_end", f"{P['t_end']}[s]", "simulated time (transient)"),
+        ("t_step", f"{P['t_step']}[s]", "output interval"),
+        ("T_top", f"{P.get('T_top', 25.0)}[degC]", "top-face sink"),
+        ("k_mult", f"{P.get('k_mult', 1.0)}",
+         "liquid effective-k multiplier (Fluent-matching value = Nu)"),
+        ("dTdt_pred",
+         "Q_cell/(rho_bat*cp_bat*a_cell^2*L_z + "
+         "rho_oil*cp_oil*(W_tank*H_tank - a_cell^2)*L_z)",
+         "exact sealed heating slope"),
+    ]
+    for k_, v_, d_ in prm:
+        s += f'    model.param().set("{k_}", "{v_}", "{d_}");\n'
+    s += """
+    model.component().create("comp1", true);
+    model.component("comp1").geom().create("geom1", 3);
+    model.component("comp1").geom("geom1").create("blk1", "Block");
+    model.component("comp1").geom("geom1").feature("blk1")
+        .set("size", new String[]{"W_tank", "L_z", "H_tank"});
+    model.component("comp1").geom("geom1").create("blk2", "Block");
+    model.component("comp1").geom("geom1").feature("blk2")
+        .set("size", new String[]{"a_cell", "L_z", "a_cell"});
+    model.component("comp1").geom("geom1").feature("blk2")
+        .set("pos", new String[]{"W_tank/2 - a_cell/2 + x_off", "0",
+                                 "gap_bot"});
+    model.component("comp1").geom("geom1").create("selCell",
+        "BoxSelection");
+    model.component("comp1").geom("geom1").feature("selCell")
+        .set("entitydim", 3);
+    model.component("comp1").geom("geom1").feature("selCell")
+        .set("xmin", "W_tank/2 - a_cell/2 + x_off - 1e-6");
+    model.component("comp1").geom("geom1").feature("selCell")
+        .set("xmax", "W_tank/2 + a_cell/2 + x_off + 1e-6");
+    model.component("comp1").geom("geom1").feature("selCell")
+        .set("zmin", "gap_bot - 1e-6");
+    model.component("comp1").geom("geom1").feature("selCell")
+        .set("zmax", "gap_bot + a_cell + 1e-6");
+    model.component("comp1").geom("geom1").feature("selCell")
+        .set("condition", "inside");
+    model.component("comp1").geom("geom1").create("selTop",
+        "BoxSelection");
+    model.component("comp1").geom("geom1").feature("selTop")
+        .set("entitydim", 2);
+    model.component("comp1").geom("geom1").feature("selTop")
+        .set("zmin", "H_tank - 1e-6");
+    model.component("comp1").geom("geom1").feature("selTop")
+        .set("zmax", "H_tank + 1e-6");
+    model.component("comp1").geom("geom1").feature("selTop")
+        .set("condition", "inside");
+    model.component("comp1").geom("geom1").run();
+
+    model.component("comp1").material().create("matOil", "Common");
+    model.component("comp1").material("matOil").propertyGroup("def")
+        .set("thermalconductivity", "k_mult*k_oil");
+    model.component("comp1").material("matOil").propertyGroup("def")
+        .set("density", "rho_oil");
+    model.component("comp1").material("matOil").propertyGroup("def")
+        .set("heatcapacity", "cp_oil");
+    model.component("comp1").material("matOil").selection().all();
+    model.component("comp1").material().create("matBat", "Common");
+    model.component("comp1").material("matBat").propertyGroup("def")
+        .set("thermalconductivity", "k_bat");
+    model.component("comp1").material("matBat").propertyGroup("def")
+        .set("density", "rho_bat");
+    model.component("comp1").material("matBat").propertyGroup("def")
+        .set("heatcapacity", "cp_bat");
+    model.component("comp1").material("matBat").selection()
+        .named("geom1_selCell");
+
+    model.component("comp1").physics().create("ht", "HeatTransfer",
+        "geom1");
+    model.component("comp1").physics("ht").create("hs1", "HeatSource",
+        3);
+    model.component("comp1").physics("ht").feature("hs1").selection()
+        .named("geom1_selCell");
+    model.component("comp1").physics("ht").feature("hs1")
+        .set("Q0", "q_v");
+"""
+    if top_fixed:
+        s += """    model.component("comp1").physics("ht").create("temp1",
+        "TemperatureBoundary", 2);
+    model.component("comp1").physics("ht").feature("temp1")
+        .selection().named("geom1_selTop");
+    model.component("comp1").physics("ht").feature("temp1")
+        .set("T0", "T_top");
+"""
+    s += """    model.component("comp1").physics("ht").feature("init1")
+        .set("Tinit", "T0_C");
+
+    model.component("comp1").cpl().create("aveAll", "Average");
+    model.component("comp1").cpl("aveAll").selection().all();
+    model.component("comp1").cpl().create("maxB", "Maximum");
+    model.component("comp1").cpl("maxB").selection()
+        .named("geom1_selCell");
+    model.component("comp1").cpl().create("aveB", "Average");
+    model.component("comp1").cpl("aveB").selection()
+        .named("geom1_selCell");
+    model.component("comp1").cpl().create("intTop", "Integration");
+    model.component("comp1").cpl("intTop").selection()
+        .geom("geom1", 2);
+    model.component("comp1").cpl("intTop").selection()
+        .named("geom1_selTop");
+
+    model.component("comp1").mesh().create("mesh1");
+    model.component("comp1").mesh("mesh1").autoMeshSize(4);
+
+"""
+    if steady:
+        s += ('    model.study().create("std1");\n'
+              '    model.study("std1").create("stat", '
+              '"Stationary");\n')
+    else:
+        s += ('    model.study().create("std1");\n'
+              '    model.study("std1").create("time", '
+              '"Transient");\n'
+              '    model.study("std1").feature("time")\n'
+              '        .set("tlist", "range(0,t_step,t_end)");\n')
+    if not build_only:
+        s += '    model.study("std1").run();\n'
+    else:
+        s += ('    // BUILD-ONLY: open the .mph, press Compute (F8);'
+              ' then Evaluate All\n    // and right-click each'
+              ' Export node > Export.\n')
+    if top_fixed:
+        evals = ('"maxB(T)", "aveB(T)", "aveAll(T)", '
+                 '"intTop(ht.ntflux)", "Q_cell", '
+                 '"intTop(ht.ntflux) - Q_cell"')
+        units = '"degC", "degC", "degC", "W", "W", "W"'
+        descs = ('"bar peak T", "bar average T", "volume-average T", '
+                 '"FEA heat out of the top face", '
+                 '"bar heat (the anchor)", '
+                 '"DEVIATION - must be ~0 at the solution"')
+    else:
+        evals = ('"aveAll(T)", "T0_C + dTdt_pred*t", '
+                 '"aveAll(T) - (T0_C + dTdt_pred*t)", "maxB(T)"')
+        units = '"degC", "degC", "K", "degC"'
+        descs = ('"volume-average T", "exact adiabatic line", '
+                 '"DEVIATION - must be ~0", "bar peak T"')
+    s += f"""
+    model.result().numerical().create("gev1", "EvalGlobal");
+    model.result().numerical("gev1").set("expr", new String[]{{
+        {evals}}});
+    model.result().numerical("gev1").set("unit", new String[]{{
+        {units}}});
+    model.result().numerical("gev1").set("descr", new String[]{{
+        {descs}}});
+    model.result().table().create("tbl1", "Table");
+    model.result().numerical("gev1").set("table", "tbl1");
+    model.result().export().create("texp1", "Table");
+    model.result().export("texp1").set("table", "tbl1");
+    model.result().export("texp1").set("filename",
+        "{cls}_results.txt");
+    model.result().export().create("data1", "Data");
+    model.result().export("data1").set("expr", new String[]{{"T"}});
+    model.result().export("data1").set("unit",
+        new String[]{{"degC"}});
+    model.result().export("data1").set("location", "regulargrid");
+    model.result().export("data1").set("regulargridx3", 61);
+    model.result().export("data1").set("regulargridy3", 21);
+    model.result().export("data1").set("regulargridz3", 73);
+    model.result().export("data1").set("filename",
+        "{cls}_field.txt");
+"""
+    if not build_only:
+        s += ('    model.result().numerical("gev1").setResult();\n'
+              '    model.result().export("texp1").run();\n'
+              '    model.result().export("data1").run();\n')
+    s += f"""
+    model.result().create("pg1", "PlotGroup3D");
+    model.result("pg1").create("vol1", "Volume");
+    model.result("pg1").feature("vol1").set("expr", "T");
+    model.result("pg1").feature("vol1").set("unit", "degC");
+
+    model.save("{cls}");
+    return model;
+  }}
+
+  public static void main(String[] args) throws IOException {{
+    run();
+  }}
+}}
+"""
+    return s

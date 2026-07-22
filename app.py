@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.13"
+APP_VERSION = "v10.14"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -2147,11 +2147,14 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop, Q_duty, chil):
 #  the analytical series solution, and judge the run.                #
 # ------------------------------------------------------------------ #
 def parse_comsol_field(text):
-    """COMSOL spreadsheet Data export -> (x_1d, y_1d, T_2d[ny,nx]).
-    Skips %-header lines; takes the first three numeric columns as
-    x, y, T. Handles the regular-grid export directly and falls back
-    to bin-averaging for scattered (mesh-node) exports."""
-    xs, ys, ts = [], [], []
+    """COMSOL spreadsheet Data export -> (x, height, T_2d, info).
+    3 numeric columns = 2D (x, y, T). 4 columns = 3D (x, y_depth, z,
+    T): the field is sliced at mid-depth for the 2D checker, and
+    info["zvar"] reports the worst variation ACROSS the depth at any
+    (x, z) - for the z-invariant WP3 case this must be solver noise.
+    Regular grids are pivoted exactly; scattered exports fall back to
+    bin-averaging."""
+    rows = []
     for ln in text.splitlines():
         ln = ln.strip()
         if not ln or ln.startswith("%"):
@@ -2164,11 +2167,37 @@ def parse_comsol_field(text):
             except ValueError:
                 break
         if len(vals) >= 3:
-            xs.append(vals[0]); ys.append(vals[1]); ts.append(vals[2])
-    if len(ts) < 50:
+            rows.append(vals[:4])
+    if len(rows) < 50:
         raise ValueError("not a recognisable COMSOL field export "
-                         f"({len(ts)} data rows found)")
-    x = np.asarray(xs); y = np.asarray(ys); T = np.asarray(ts)
+                         f"({len(rows)} data rows found)")
+    ncol = min(len(r) for r in rows)
+    info = dict(kind="2d", zvar=None, depth_n=1)
+    if ncol >= 4:
+        A = np.asarray([r[:4] for r in rows])
+        xa, ya, za, Ta = A[:, 0], A[:, 1], A[:, 2], A[:, 3]
+        xu = np.unique(np.round(xa, 9))
+        yu = np.unique(np.round(ya, 9))
+        zu = np.unique(np.round(za, 9))
+        info.update(kind="3d", depth_n=len(yu),
+                    depth_span=float(ya.max() - ya.min()))
+        if len(xu) * len(yu) * len(zu) == len(Ta):
+            ix = np.searchsorted(xu, np.round(xa, 9))
+            iy = np.searchsorted(yu, np.round(ya, 9))
+            iz = np.searchsorted(zu, np.round(za, 9))
+            G = np.full((len(zu), len(yu), len(xu)), np.nan)
+            G[iz, iy, ix] = Ta
+            info["zvar"] = float(np.nanmax(
+                np.nanmax(G, axis=1) - np.nanmin(G, axis=1)))
+            mid = len(yu) // 2
+            return xu, zu, G[:, mid, :], info
+        mid_y = np.median(ya)
+        keep = np.abs(ya - mid_y) <= (ya.max() - ya.min()) / (
+            2 * max(len(yu), 2))
+        x = xa[keep]; y = za[keep]; T = Ta[keep]
+    else:
+        A = np.asarray([r[:3] for r in rows])
+        x, y, T = A[:, 0], A[:, 1], A[:, 2]
     xu = np.unique(np.round(x, 9)); yu = np.unique(np.round(y, 9))
     if len(xu) * len(yu) == len(T):
         ix = np.searchsorted(xu, np.round(x, 9))
@@ -2176,7 +2205,7 @@ def parse_comsol_field(text):
         G = np.full((len(yu), len(xu)), np.nan)
         G[iy, ix] = T
         if not np.isnan(G).any():
-            return xu, yu, G
+            return xu, yu, G, info
     nx, ny = 61, 73
     xe = np.linspace(x.min(), x.max(), nx + 1)
     ye = np.linspace(y.min(), y.max(), ny + 1)
@@ -2186,7 +2215,7 @@ def parse_comsol_field(text):
     np.add.at(s, (iy, ix), T); np.add.at(c, (iy, ix), 1.0)
     c[c == 0] = np.nan
     return (0.5 * (xe[1:] + xe[:-1]), 0.5 * (ye[1:] + ye[:-1]),
-            s / c)
+            s / c, info)
 
 
 def wp3_series_field(x, y, W, H, a, xc, gap, q_v, k, T_top,
@@ -2662,6 +2691,11 @@ def fea_tab(d, g, fl, cool_df, loop):
                   fxb_ttop=25.0, fxb_km=1.0)
     st.button("Match the Fluent WP3 report (one click)",
               on_click=_wp3, type="primary", key="fxb_preset")
+    dim3 = st.radio("Model dimension",
+                    ["2D (plane section)",
+                     "3D (section extruded the full depth, as the "
+                     "report)"],
+                    horizontal=True, key="fxb_dim").startswith("3D")
 
     c1, c2, c3, c4 = st.columns(4)
     Wt = c1.slider("Tank width [mm]", 10.0, 400.0, 25.0, 1.0,
@@ -2734,6 +2768,8 @@ def fea_tab(d, g, fl, cool_df, loop):
     P = fea_p_basic(cfl, Wt, Ht, a, xoff, gap, Lz, Q, kb, rb, cb,
                     T0, tend, max(tend / 30.0, 10.0), 0.0, 25.0)
     _cls = ("ipl_wp3_report" if top_fixed else "ipl_sealed_check")
+    if dim3:
+        _cls += "_3d"
     if build_only:
         _cls += "_build"
     P.update(bar_name=mat, top_fixed=top_fixed, T_top=Ttop,
@@ -2792,8 +2828,16 @@ def fea_tab(d, g, fl, cool_df, loop):
         st.metric("Volumetric heat q_v", f"{qv:,.0f} W/m³")
         st.caption("The report uses 100,000 W/m³ - the preset lands "
                    "there exactly (0.75 W over 5×5×300 mm).")
+        if dim3:
+            st.caption("3D note: the section is extruded the full "
+                       "depth with adiabatic ends, so the exact "
+                       "solution is z-invariant - the 3D run must "
+                       "match the 2D field to solver noise, and the "
+                       "checker below measures that from the 3D "
+                       "export directly.")
         if top_fixed:
             st.metric("Anchor at the solution",
+                      f"top flux = {Q:.2f} W total" if dim3 else
                       f"top flux = {Q/Lz:.2f} W/m")
             st.markdown(
                 "**Correctness check:** at steady state every watt "
@@ -2814,7 +2858,8 @@ def fea_tab(d, g, fl, cool_df, loop):
                 "volume-average temperature must climb this exact "
                 "line; the exported model tabulates its own "
                 "deviation at every step.")
-    jav = fea_export.comsol_basic_2d(P)
+    jav = (fea_export.comsol_basic_3d(P) if dim3 else
+           fea_export.comsol_basic_2d(P))
     st.download_button(f"COMSOL model file ({P['cls']}.java)",
                        data=jav, file_name=f"{P['cls']}.java",
                        mime="text/plain", use_container_width=True,
@@ -2861,7 +2906,7 @@ def fea_tab(d, g, fl, cool_df, loop):
                     language=None)
             continue
         try:
-            fx_, fy_, fT_ = parse_comsol_field(txt)
+            fx_, fy_, fT_, finf = parse_comsol_field(txt)
         except Exception as e:
             st.error(f"{up.name}: {e}")
             continue
@@ -2876,8 +2921,19 @@ def fea_tab(d, g, fl, cool_df, loop):
                 f"the tank set above ({Wt*1000:.0f} x "
                 f"{Ht*1000:.0f} mm) - fix the sliders or the "
                 "upload before trusting the verdict.")
+        if finf["kind"] == "3d":
+            st.info(
+                f"{up.name}: 3D field ({finf['depth_n']} depth "
+                f"planes). Worst variation across the depth at any "
+                f"point: **{(finf['zvar'] or 0)*1000:.1f} mK** - "
+                "for this z-invariant case that is the 2D-vs-3D "
+                "agreement, measured; the report's Fluent pair "
+                "differed by ~20 mK. Checking the mid-depth slice "
+                "below.")
         m = wp3_check_field(fx_, fy_, fT_, Wt, Ht, a, xc_, gap,
                             Q / (a * a * Lz), k_eff, Ttop)
+        st.session_state.setdefault("fx_fields", {})[up.name] = (
+            fx_, fy_, fT_)
         if m["anchors_ok"]:
             st.success(
                 f"{up.name}: energy anchors PASS - top row within "
@@ -2948,6 +3004,29 @@ def fea_tab(d, g, fl, cool_df, loop):
                                     font=dict(size=12), x=0.02))
         st.plotly_chart(fp, width='stretch',
                         key=f"fx_prof_{up.name}")
+        _flds = st.session_state.get("fx_fields", {})
+        _others = [(n_, v_) for n_, v_ in _flds.items()
+                   if n_ != up.name and v_[2].shape == fT_.shape]
+        if _others:
+            n2, (x2, y2, T2) = _others[-1]
+            dd = fT_ - T2
+            st.markdown(
+                f"**Cross-comparison {up.name} vs {n2}** (FEA vs "
+                f"FEA on matching grids): RMS "
+                f"**{float(np.sqrt(np.nanmean(dd**2))):.4f} °C**, "
+                f"worst point "
+                f"**{float(np.nanmax(np.abs(dd))):.4f} °C**.")
+            fgd = go.Figure(go.Heatmap(
+                x=fx_ * 1000, y=fy_ * 1000, z=dd,
+                colorscale="RdBu", colorbar=dict(thickness=10)))
+            fgd.update_layout(height=300, margin=dict(l=6, r=6,
+                              t=28, b=6),
+                              title=dict(text=f"{up.name} - {n2} "
+                                         "[°C]", font=dict(size=12),
+                                         x=0.02),
+                              yaxis=dict(scaleanchor="x"))
+            st.plotly_chart(fgd, width='stretch',
+                            key=f"fx_x_{up.name}")
         st.caption(
             "Caveat stated once and honestly: the series assumes "
             "uniform liquid conductivity, so INSIDE the aluminium "
@@ -3871,7 +3950,8 @@ def smoke():
     _rows = "\n".join(f"{xv:.9e} {yv:.9e} {_T[j, i]:.9e}"
                        for j, yv in enumerate(_y)
                        for i, xv in enumerate(_x))
-    _xu, _yu, _Tp = parse_comsol_field("% x y T\n" + _rows)
+    _xu, _yu, _Tp, _inf = parse_comsol_field("% x y T\n" + _rows)
+    assert _inf["kind"] == "2d"
     assert _Tp.shape == _T.shape and \
         np.nanmax(np.abs(_Tp - _T)) < 1e-6
     _m = wp3_check_field(_xu, _yu, _Tp, 0.025, 0.030, 0.005,
@@ -3882,6 +3962,40 @@ def smoke():
         -((_X - 0.02) ** 2 + (_Y - 0.02) ** 2) / 1e-5),
         0.025, 0.030, 0.005, 0.0125, 0.010, 1e5, 0.6, 25.0)
     assert _mb["rms_out"] > 0.03, "checker must flag a bad field"
+    # ---- 3D: generator markers + 4-column roundtrip with z-check
+    _p3 = dict(_pb, cls="ipl_wp3_report_3d")
+    _j3 = _FX.comsol_basic_3d(_p3)
+    assert "Block" in _j3 and "regulargridz3" in _j3 and \
+        "intTop(ht.ntflux) - Q_cell" in _j3 and \
+        "throws IOException" in _j3
+    _j3b = _FX.comsol_basic_3d(dict(_p3, build_only=True,
+                                    cls="ipl_wp3_report_3d_build"))
+    assert 'std1").run()' not in _j3b
+    _yd = np.linspace(0, 0.30, 9)
+    _rows3 = "\n".join(
+        f"{xv:.9e} {yv:.9e} {zv:.9e} {_T[j, i]:.9e}"
+        for yv in _yd for j, zv in enumerate(_y)
+        for i, xv in enumerate(_x))
+    _x3, _z3, _Ts3, _i3 = parse_comsol_field("% x y z T\n" + _rows3)
+    assert _i3["kind"] == "3d" and _i3["depth_n"] == 9
+    assert _i3["zvar"] < 1e-9, "tiled field must be z-invariant"
+    assert np.nanmax(np.abs(_Ts3 - _T)) < 1e-6
+    _m3 = wp3_check_field(_x3, _z3, _Ts3, 0.025, 0.030, 0.005,
+                          0.0125, 0.010, 1e5, 0.6, 25.0)
+    assert _m3["anchors_ok"] and _m3["rms_out"] < 1e-6
+    # perturb one depth plane and require zvar to flag it
+    _pert = []
+    for yv in _yd:
+        for j, zv in enumerate(_y):
+            for i, xv in enumerate(_x):
+                t = _T[j, i] + (0.2 if abs(yv - _yd[4]) < 1e-12
+                                else 0.0)
+                _pert.append(f"{xv:.9e} {yv:.9e} {zv:.9e} {t:.9e}")
+    _, _, _, _i3b = parse_comsol_field("% h\n" + "\n".join(_pert))
+    assert _i3b["zvar"] > 0.19, "depth perturbation must be flagged"
+    print(f"wp3 3d: markers OK, z-invariant roundtrip zvar "
+          f"{_i3['zvar']:.1e}, perturbed plane flagged "
+          f"{_i3b['zvar']:.2f} K")
     print(f"wp3 analytics: series peak {_T.max():.2f} degC, "
           f"top-flux {_Qp:.3f} W/m, roundtrip rms "
           f"{_m['rms_out']:.1e}, perturbation flagged "
