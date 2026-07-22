@@ -36,6 +36,22 @@ DISCLAIMER = (
     "parameter, default 0).")
 
 
+
+def _qcell_rows(P):
+    if P.get("heat_mode") == "battery":
+        return [
+            ("I_cell", f"{P.get('I_cell', 5.0)}[A]",
+             "battery constant current - sweep me in COMSOL"),
+            ("R0_cell", f"{P.get('R0_cell', 0.02)}[ohm]",
+             "battery ohmic resistance at the set SOC (from the "
+             "model card)"),
+            ("R1_cell", f"{P.get('R1_cell', 0.01)}[ohm]",
+             "battery polarisation resistance at the set SOC"),
+            ("Q_cell", "I_cell^2*(R0_cell + R1_cell)",
+             "total bar heat FROM THE BATTERY MODEL"),
+        ]
+    return [("Q_cell", f"{P['Q_cell']}[W]", "total bar heat")]
+
 def comsol_basic_2d(P):
     """P keys: W_tank, H_tank, a_cell, x_off, gap_bot, L_z, Q_cell,
     k_bat, rho_bat, cp_bat, k_oil, rho_oil, cp_oil, T0, t_end,
@@ -100,8 +116,7 @@ public class {cls} {{
         ("gap_bot", f"{P['gap_bot']}[m]",
          "battery bottom above the tank floor"),
         ("L_z", f"{P['L_z']}[m]", "depth into the plane (for Q only)"),
-        ("Q_cell", f"{P['Q_cell']}[W]",
-         "total battery heat over the depth"),
+                *_qcell_rows(P),
         ("q_v", "Q_cell/(a_cell^2*L_z)", "volumetric heat in the "
          "battery"),
         ("k_bat", f"{P['k_bat']}[W/(m*K)]",
@@ -506,7 +521,7 @@ public class {cls} {{
         ("a_cell", f"{P['a_cell']}[m]", "bar square side"),
         ("x_off", f"{P['x_off']}[m]", "bar offset from centreline"),
         ("gap_bot", f"{P['gap_bot']}[m]", "bar bottom above floor"),
-        ("Q_cell", f"{P['Q_cell']}[W]", "total bar heat"),
+        *_qcell_rows(P),
         ("q_v", "Q_cell/(a_cell^2*L_z)", "volumetric heat"),
         ("k_bat", f"{P['k_bat']}[W/(m*K)]", "bar conductivity"),
         ("rho_bat", f"{P['rho_bat']}[kg/m^3]", "bar density"),

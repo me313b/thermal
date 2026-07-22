@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.21"
+APP_VERSION = "v10.22"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -2294,6 +2294,7 @@ def wp3_check_field(x, y, T, W, H, a, xc, gap, q_v, k, T_top):
     if above.sum() > 3:
         A_ = np.vstack([y[above], np.ones(above.sum())]).T
         sl = float(np.linalg.lstsq(A_, rm[above], rcond=None)[0][0])
+        m["slope_meas"] = sl
         m["slope_rel"] = float(abs(sl - slope_exact) /
                                abs(slope_exact))
     else:
@@ -2950,7 +2951,7 @@ def battery_tab():
 def fea_tab(d, g, fl, cool_df, loop):
     st.markdown("#### FEA - the basic module (COMSOL, 2D + 3D)")
     st.markdown(
-        "**COMSOL** conduction models of the WP3 benchmark case: a "
+        "**COMSOL** conduction models of the benchmark case from your CFD comparison report: a "
         "long **heat bar** (a 5 mm aluminium bar as the battery "
         "surrogate) inside a liquid tank. Sides and bottom "
         "adiabatic; the **top either held at a fixed temperature** "
@@ -2963,17 +2964,17 @@ def fea_tab(d, g, fl, cool_df, loop):
         "conducting solid; buoyant circulation is not solved - "
         "the effective-k multiplier stands in for it, and the "
         "value that reproduces the reference CFD (Ansys Fluent, "
-        "from the WP3 report) IS the circulation's Nusselt number. "
+        "from your CFD report) IS the circulation's Nusselt number. "
         "Every input is a named parameter in the exported files.")
 
     def _wp3():
         st.session_state.update(fxb_w=25.0, fxb_h=30.0, fxb_a=5.0, fxb_lz=300.0,
                   fxb_gap=10.0, fxb_xo=0.0, fxb_q=0.75, fxb_t0=25.0,
-                  fxb_mat="Aluminium (WP3 values)",
+                  fxb_mat="Aluminium (benchmark values)",
                   fx_fluid="Deionized water",
-                  fxb_cfg="Fixed-top (WP3 case)",
+                  fxb_cfg="Fixed-top (benchmark)",
                   fxb_ttop=25.0, fxb_km=1.0)
-    st.button("Load the WP3 case (one click)",
+    st.button("Load the benchmark case (one click)",
               on_click=_wp3, type="primary", key="fxb_preset")
     st.caption("Battery source for heat: **"
                + st.session_state.get("bat_src",
@@ -2982,25 +2983,57 @@ def fea_tab(d, g, fl, cool_df, loop):
                "sends its sustained heat into the Q field below.")
 
     c1, c2, c3, c4 = st.columns(4)
-    Wt = c1.slider("Tank width [mm]", 10.0, 400.0, 25.0, 1.0,
-                   key="fxb_w") / 1000
-    Ht = c2.slider("Tank height [mm]", 10.0, 400.0, 30.0, 1.0,
-                   key="fxb_h") / 1000
-    a = c3.slider("Bar side [mm]", 2.0, 80.0, 5.0, 0.5,
-                  key="fxb_a") / 1000
-    Lz = c4.slider("Depth into the plane [mm]", 30.0, 1000.0, 300.0,
-                   10.0, key="fxb_lz") / 1000
+    Wt = c1.number_input("Tank width [mm]", 5.0, 400.0, 25.0,
+                         0.1, format="%.1f", key="fxb_w") / 1000
+    Ht = c2.number_input("Tank height [mm]", 5.0, 400.0, 30.0,
+                         0.1, format="%.1f", key="fxb_h") / 1000
+    a = c3.number_input("Bar side [mm]", 1.0, 80.0, 5.0, 0.1,
+                        format="%.1f", key="fxb_a") / 1000
+    Lz = c4.number_input("Depth into the plane [mm]", 10.0,
+                         2000.0, 300.0, 1.0, format="%.0f",
+                         key="fxb_lz") / 1000
     c1, c2, c3, c4 = st.columns(4)
-    gap = c1.slider("Bar bottom above the floor [mm]", 0.0, 200.0,
-                    10.0, 1.0, key="fxb_gap") / 1000
-    xoff = c2.slider("Sideways offset [mm]", -100.0, 100.0, 0.0,
-                     1.0, key="fxb_xo") / 1000
-    Q = c3.number_input("Bar heat, total [W]", 0.01, 200.0, 0.75,
-                        0.01, key="fxb_q")
+    gap = c1.number_input("Bar bottom above the floor [mm]", 0.0,
+                          300.0, 10.0, 0.1, format="%.1f",
+                          key="fxb_gap") / 1000
+    xoff = c2.number_input("Sideways offset [mm]", -150.0, 150.0,
+                           0.0, 0.1, format="%.1f",
+                           key="fxb_xo") / 1000
+    hsrc = c3.selectbox("Heat source",
+                        ["Manual Q [W]",
+                         "Battery model at a set current"],
+                        key="fxb_hs")
     T0 = c4.slider("Initial temperature [°C]", 5.0, 50.0, 25.0, 1.0,
                    key="fxb_t0")
+    bat_mode = hsrc.startswith("Battery")
+    if bat_mode:
+        import battery_card as _BCm
+        _bm = st.session_state.get("bat_model") or             _BCm.default_model()
+        hb1, hb2, hb3, hb4 = st.columns(4)
+        I_cell = hb1.number_input("Constant current [A]", 0.1,
+                                  300.0, 5.0, 0.1, format="%.1f",
+                                  key="fxb_ic")
+        soc_h = hb2.number_input("SOC [%]", 5.0, 95.0, 50.0, 5.0,
+                                 key="fxb_socq")
+        R0c = float(_bm["r0"](soc_h))
+        R1c = float(_bm["r1"](soc_h))
+        Q = I_cell * I_cell * (R0c + R1c)
+        hb3.metric("R0 + R1 at SOC",
+                   f"{1000*(R0c+R1c):.2f} mΩ")
+        hb4.metric("Q = I²(R0+R1)", f"{Q:.3f} W")
+        st.caption("Battery source in use: **"
+                   + st.session_state.get("bat_src",
+                                          "default (simplified)")
+                   + "** - the exported COMSOL files carry "
+                   "I_cell, R0_cell, R1_cell as named parameters "
+                   "with Q_cell defined from them, so the current "
+                   "is sweepable inside COMSOL itself.")
+    else:
+        I_cell, R0c, R1c = 0.0, 0.0, 0.0
+        Q = st.number_input("Bar heat, total [W]", 0.01, 200.0,
+                            0.75, 0.01, key="fxb_q")
     c1, c2, c3, c4 = st.columns(4)
-    mat = c1.selectbox("Bar material", ["Aluminium (WP3 values)",
+    mat = c1.selectbox("Bar material", ["Aluminium (benchmark values)",
                                         "Battery jelly-roll",
                                         "Custom"], key="fxb_mat")
     fx_fl = c2.selectbox("Liquid", list(cool_df["name"]),
@@ -3008,7 +3041,7 @@ def fea_tab(d, g, fl, cool_df, loop):
                                     "Deionized water").idxmax()),
                          key="fx_fluid")
     cfg = c3.selectbox("Configuration",
-                       ["Fixed-top (WP3 case)",
+                       ["Fixed-top (benchmark)",
                         "Sealed (adiabatic, transient)",
                         "Fan upflow (open channel)"], key="fxb_cfg")
     top_fixed = cfg.startswith("Fixed")
@@ -3021,8 +3054,9 @@ def fea_tab(d, g, fl, cool_df, loop):
                                        "Transient"], key="fxb_study")
         steady = study.startswith("Stat")
     elif fan:
-        u_fan = c4.slider("Fan upward speed [mm/s]", 0.1, 20.0,
-                          0.5, 0.1, key="fxb_uf") / 1000.0
+        u_fan = c4.number_input("Fan upward speed [mm/s]", 0.02,
+                                50.0, 0.5, 0.05, format="%.2f",
+                                key="fxb_uf") / 1000.0
         T_in = st.slider("Inlet oil temperature [°C]", 5.0, 60.0,
                          25.0, 1.0, key="fxb_tin")
         steady = True
@@ -3041,7 +3075,7 @@ def fea_tab(d, g, fl, cool_df, loop):
                    "study is Transient.")
     if mat.startswith("Alum"):
         kb, rb, cb = 202.4, 2719.0, 871.0
-        st.caption("Aluminium at the WP3 report's values: k 202.4 "
+        st.caption("Aluminium at the benchmark values (from your CFD report): k 202.4 "
                    "W/m·K, ρ 2719 kg/m³, cp 871 J/kg·K.")
     elif mat.startswith("Batt"):
         kb, rb, cb = 0.9, 2500.0, 900.0
@@ -3057,8 +3091,9 @@ def fea_tab(d, g, fl, cool_df, loop):
         cb = cc3.slider("Bar cp [J/kg·K]", 300.0, 1500.0, 871.0,
                         1.0, key="fxb_cb")
     cc1, cc2, cc3 = st.columns([1.2, 1, 1])
-    km = cc1.slider("Liquid effective-k multiplier (1 = pure "
-                    "conduction)", 1.0, 15.0, 1.0, 0.5, key="fxb_km")
+    km = cc1.number_input("Liquid effective-k multiplier (1 = "
+                          "pure conduction)", 0.5, 30.0, 1.0,
+                          0.05, format="%.2f", key="fxb_km")
     tend = cc2.slider("Transient time [min]", 5.0, 240.0, 30.0, 5.0,
                       key="fxb_te") * 60.0
     build_only = cc3.checkbox(
@@ -3075,7 +3110,9 @@ def fea_tab(d, g, fl, cool_df, loop):
              k_mult=km, steady=steady, build_only=build_only,
              flow_mode="fan" if fan else
                        ("top" if top_fixed else "sealed"),
-             u_fan=u_fan, T_in=T_in)
+             u_fan=u_fan, T_in=T_in,
+             heat_mode="battery" if bat_mode else "manual",
+             I_cell=I_cell, R0_cell=R0c, R1_cell=R1c)
     qv = Q / (a * a * Lz)
 
     cx1, cx2 = st.columns([1.4, 1])
@@ -3178,7 +3215,7 @@ def fea_tab(d, g, fl, cool_df, loop):
                 "must leave through the fixed top; both exported "
                 "models integrate that flux and tabulate its "
                 "deviation. **Against the reference CFD** (Ansys "
-                "Fluent, from the WP3 report): with $k_{mult}=1$ "
+                "Fluent, from your CFD report): with $k_{mult}=1$ "
                 "these conduction-only models read hotter than the "
                 "CFD's 25.7 °C, because the CFD resolves the "
                 "~0.85 mm/s buoyant plume. Raise $k_{mult}$ until "
@@ -3228,8 +3265,9 @@ def fea_tab(d, g, fl, cool_df, loop):
         "with slope $Q'/(kW)$; pure energy conservation, no "
         "approximation - then compares against the **analytical "
         "series solution** outside the bar footprint. Checked "
-        "against the case configured above, so press the WP3 "
-        "preset (or match the sliders) before uploading.")
+        "against the case configured above, so press the "
+        "benchmark preset (or match the inputs) before "
+        "uploading.")
     ups = st.file_uploader(
         "Upload the exported file(s)", type=["txt", "dat", "csv"],
         accept_multiple_files=True, key="fx_up")
@@ -3339,6 +3377,18 @@ def fea_tab(d, g, fl, cool_df, loop):
                                         x=0.02))
             st.plotly_chart(fp, width='stretch',
                             key=f"fx_fanprof_{up.name}")
+            _dTo = float(m["mean_num"][-1] - T_in)
+            if _dTo > 1e-4:
+                _ufit = (Q / Lz) / (P["rho_oil"] * P["cp_oil"]
+                                    * Wt * _dTo)
+                def _cal_u(v=_ufit):
+                    st.session_state["fxb_uf"] = float(
+                        np.round(v * 1000.0, 2))
+                st.button(
+                    f"Calibrate: set the fan speed to what this "
+                    f"run implies ({_ufit*1000:.2f} mm/s from "
+                    f"the outlet rise)",
+                    on_click=_cal_u, key=f"fx_calu_{up.name}")
             continue
         if m["anchors_ok"]:
             st.success(
@@ -3370,7 +3420,7 @@ def fea_tab(d, g, fl, cool_df, loop):
         if wp3_like and abs(km - 1.0) < 1e-6:
             nu = (m["T_peak"] - Ttop) / 0.72
             st.markdown(
-                f"**Against Fluent (WP3):** conduction-only peak "
+                f"**Against the reference CFD (Fluent):** conduction-only peak "
                 f"rise {m['T_peak']-Ttop:.2f} °C vs Fluent's 0.72 "
                 f"°C - the buoyant circulation is worth a factor "
                 f"of **{nu:.1f}** here. Raise the k-multiplier to "
@@ -3410,6 +3460,17 @@ def fea_tab(d, g, fl, cool_df, loop):
                                     font=dict(size=12), x=0.02))
         st.plotly_chart(fp, width='stretch',
                         key=f"fx_prof_{up.name}")
+        if m.get("slope_meas") is not None and \
+                m["slope_meas"] < 0:
+            _keff = -(Q / Lz) / (m["slope_meas"] * Wt)
+            _kfit = _keff / P["k_oil"]
+            def _cal_k(v=_kfit):
+                st.session_state["fxb_km"] = float(np.round(v, 2))
+            st.button(
+                f"Calibrate: set the k-multiplier to what this "
+                f"run implies ({_kfit:.2f} from the exact "
+                f"mean-slope relation)",
+                on_click=_cal_k, key=f"fx_calk_{up.name}")
         st.caption(
             "Caveat stated once and honestly: the series assumes "
             "uniform liquid conductivity, so INSIDE the aluminium "
@@ -4467,8 +4528,17 @@ def smoke():
     _jfb = _FX.comsol_basic_2d(dict(_pf, cls="ipl2d",
                                     build_only=True))
     assert 'std1").run()' not in _jfb
+    _pbat = dict(_pb, heat_mode="battery", I_cell=15.0,
+                 R0_cell=0.0055, R1_cell=0.0032)
+    for _g in (_FX.comsol_basic_2d, _FX.comsol_basic_3d):
+        _jb = _g(dict(_pbat, cls="iplX"))
+        assert '"I_cell"' in _jb and \
+            'I_cell^2*(R0_cell + R1_cell)' in _jb
+    assert '"I_cell"' not in _FX.comsol_basic_2d(
+        dict(_pb, cls="iplX"))
     print("fan rung: closed form vs FD < 1 mK at Pe 2084 and 104, "
-          "energy split exact, exporter markers OK both dims")
+          "energy split exact, exporter markers OK both dims; "
+          "battery-current parameterisation verified")
     # ---- battery card: parser, round-trip, defaults
     import battery_card as _BC
     assert _BC.parse_condition("JP50_25deg_3C_2nd") == (25.0, 3.0, 2)

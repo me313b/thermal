@@ -587,6 +587,15 @@ thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
 
+## v10.22
+
+Three user-raised improvements plus the acronym purge.
+
+- Battery -> COMSOL, direct: the FEA tab gains a Heat source selector. "Battery model at a set current" takes a constant current and SOC, reads R0 and R1 from the ACTIVE battery source (JP50 card, any card, or the labelled default), shows Q = I^2(R0+R1), and - the point - the exported ipl2d/ipl3d carry I_cell, R0_cell, R1_cell as named COMSOL parameters with Q_cell defined as the expression I_cell^2*(R0_cell+R1_cell), so the current is sweepable inside COMSOL itself. Manual Q mode unchanged.
+- Calibrate-from-run buttons in the checker: a fixed-top upload gets "set the k-multiplier to what this run implies" (from the exact above-bar mean-slope relation k_eff = -Q'/(slope*W)); a fan upload gets "set the fan speed to what this run implies" (from the outlet rise). One click writes the fitted value into the input.
+- Geometry inputs at 0.1 mm: the six geometry sliders became typed number fields (0.1 mm steps, depth 1 mm), and k-multiplier / fan speed became free number fields too - which is also what lets the calibration buttons set values like 4.17 without slider-grid snapping.
+- "WP3" removed from the UI: it meant Work Package 3 (the user's own CFD comparison report). The preset stays - it loads the validated benchmark case so the checker knows what it is judging - but reads "Load the benchmark case"; the configuration and material options now say "benchmark" with the CFD-report provenance in the captions.
+
 ## v10.21
 
 Self-explaining battery file names, same cure as the COMSOL exports. The model card downloads as <cell>_card_upload_to_app.csv (the one that goes back into the app - the uploader label says so too), and the 2-column COMSOL extracts as <quantity>_<temp>degC_<rate>C_for_comsol.csv (degC removes the 25C-vs-rate ambiguity). The card reader keys on the '%' header, not the filename, so previously saved cards still load.
