@@ -37,6 +37,231 @@ DISCLAIMER = (
 
 
 
+def _pipe_prm_rows(P):
+    if not P.get("n_pipes"):
+        return []
+    return [
+        ("r_pipe", f"{P.get('d_pipe', 0.008)/2}[m]",
+         "water-pipe outer radius"),
+        ("pipe_drop", f"{P.get('pipe_drop', 0.006)}[m]",
+         "pipe centre below the lid"),
+        ("h_w", f"{P.get('h_w', 1500.0)}[W/(m^2*K)]",
+         "water-side film on the pipe wall"),
+        ("T_w", f"{P.get('T_w', 20.0)}[degC]",
+         "water temperature in the pipes"),
+    ]
+
+
+def _pipes_geom_2d(P):
+    n = int(P.get("n_pipes") or 0)
+    if not n:
+        return ""
+    s = ("    // water pipes: circular channels subtracted from "
+         "the liquid;\n    // their walls get the water-side film "
+         "(h_w, T_w)\n")
+    for k in range(1, n + 1):
+        fx = (2 * k - 1) / (2 * n)
+        s += (f'    model.component("comp1").geom("geom1")'
+              f'.create("c{k}", "Circle");\n'
+              f'    model.component("comp1").geom("geom1")'
+              f'.feature("c{k}").set("r", "r_pipe");\n'
+              f'    model.component("comp1").geom("geom1")'
+              f'.feature("c{k}").set("pos", new String[]'
+              f'{{"W_tank*{fx:.6f}", "H_tank - pipe_drop"}});\n')
+    cs = ", ".join(f'"c{k}"' for k in range(1, n + 1))
+    s += ('    model.component("comp1").geom("geom1")'
+          '.create("dif1", "Difference");\n'
+          '    model.component("comp1").geom("geom1")'
+          '.feature("dif1").selection("input")\n'
+          '        .set(new String[]{"r1"});\n'
+          '    model.component("comp1").geom("geom1")'
+          '.feature("dif1").selection("input2")\n'
+          f'        .set(new String[]{{{cs}}});\n'
+          '    model.component("comp1").geom("geom1")'
+          '.create("selPipes", "BoxSelection");\n'
+          '    model.component("comp1").geom("geom1")'
+          '.feature("selPipes").set("entitydim", 1);\n'
+          '    model.component("comp1").geom("geom1")'
+          '.feature("selPipes").set("xmin", "1e-6");\n'
+          '    model.component("comp1").geom("geom1")'
+          '.feature("selPipes").set("xmax", "W_tank - 1e-6");\n'
+          '    model.component("comp1").geom("geom1")'
+          '.feature("selPipes")\n'
+          '        .set("ymin", "H_tank - pipe_drop - r_pipe '
+          '- 1e-6");\n'
+          '    model.component("comp1").geom("geom1")'
+          '.feature("selPipes")\n'
+          '        .set("ymax", "H_tank - pipe_drop + r_pipe '
+          '+ 1e-6");\n'
+          '    model.component("comp1").geom("geom1")'
+          '.feature("selPipes").set("condition", "inside");\n')
+    return s
+
+
+def _pipes_geom_3d(P):
+    n = int(P.get("n_pipes") or 0)
+    if not n:
+        return ""
+    s = ("    // water pipes: cylinders along the depth, "
+         "subtracted; walls get\n    // the water-side film "
+         "(h_w, T_w). If 6.4 rejects axistype, use the\n"
+         "    // commented cartesian axis form.\n")
+    for k in range(1, n + 1):
+        fx = (2 * k - 1) / (2 * n)
+        s += (f'    model.component("comp1").geom("geom1")'
+              f'.create("cyl{k}", "Cylinder");\n'
+              f'    model.component("comp1").geom("geom1")'
+              f'.feature("cyl{k}").set("r", "r_pipe");\n'
+              f'    model.component("comp1").geom("geom1")'
+              f'.feature("cyl{k}").set("h", "L_z");\n'
+              f'    model.component("comp1").geom("geom1")'
+              f'.feature("cyl{k}").set("axistype", "y");\n'
+              f'    // .set("axistype","cartesian"); '
+              f'.set("ax3", new double[]{{0,1,0}});\n'
+              f'    model.component("comp1").geom("geom1")'
+              f'.feature("cyl{k}").set("pos", new String[]'
+              f'{{"W_tank*{fx:.6f}", "0", '
+              f'"H_tank - pipe_drop"}});\n')
+    cs = ", ".join(f'"cyl{k}"' for k in range(1, n + 1))
+    s += ('    model.component("comp1").geom("geom1")'
+          '.create("dif1", "Difference");\n'
+          '    model.component("comp1").geom("geom1")'
+          '.feature("dif1").selection("input")\n'
+          '        .set(new String[]{"blk1"});\n'
+          '    model.component("comp1").geom("geom1")'
+          '.feature("dif1").selection("input2")\n'
+          f'        .set(new String[]{{{cs}}});\n'
+          '    model.component("comp1").geom("geom1")'
+          '.create("selPipes", "BoxSelection");\n'
+          '    model.component("comp1").geom("geom1")'
+          '.feature("selPipes").set("entitydim", 2);\n'
+          '    model.component("comp1").geom("geom1")'
+          '.feature("selPipes").set("xmin", "1e-6");\n'
+          '    model.component("comp1").geom("geom1")'
+          '.feature("selPipes").set("xmax", "W_tank - 1e-6");\n'
+          '    model.component("comp1").geom("geom1")'
+          '.feature("selPipes")\n'
+          '        .set("zmin", "H_tank - pipe_drop - r_pipe '
+          '- 1e-6");\n'
+          '    model.component("comp1").geom("geom1")'
+          '.feature("selPipes")\n'
+          '        .set("zmax", "H_tank - pipe_drop + r_pipe '
+          '+ 1e-6");\n'
+          '    model.component("comp1").geom("geom1")'
+          '.feature("selPipes").set("condition", "inside");\n')
+    return s
+
+
+def _pipes_physics(P, dim):
+    if not P.get("n_pipes"):
+        return ""
+    return (f'    model.component("comp1").physics("ht")'
+            f'.create("hfp1",\n        "HeatFluxBoundary", '
+            f'{dim - 1});\n'
+            '    model.component("comp1").physics("ht")'
+            '.feature("hfp1")\n'
+            '        .selection().named("geom1_selPipes");\n'
+            '    model.component("comp1").physics("ht")'
+            '.feature("hfp1")\n'
+            '        .set("HeatFluxType", '
+            '"ConvectiveHeatFlux");\n'
+            '    model.component("comp1").physics("ht")'
+            '.feature("hfp1").set("h", "h_w");\n'
+            '    model.component("comp1").physics("ht")'
+            '.feature("hfp1").set("Text", "T_w");\n')
+
+
+def _pipes_cpl(P, dim):
+    if not P.get("n_pipes"):
+        return ""
+    return ('    model.component("comp1").cpl().create("intPipe", '
+            '"Integration");\n'
+            '    model.component("comp1").cpl("intPipe")'
+            f'.selection().geom("geom1", {dim - 1});\n'
+            '    model.component("comp1").cpl("intPipe")'
+            '.selection()\n        .named("geom1_selPipes");\n'
+            '    model.component("comp1").cpl().create("intBot", '
+            '"Integration");\n'
+            '    model.component("comp1").cpl("intBot")'
+            f'.selection().geom("geom1", {dim - 1});\n'
+            '    model.component("comp1").cpl("intBot")'
+            '.selection()\n        .named("geom1_selBot");\n')
+
+
+def _eval_rows(P, dim, top_fixed, fan):
+    """(expr, unit, desc) rows per configuration, pipes included."""
+    per = "" if dim == 3 else "/L_z"
+    U = "W" if dim == 3 else "W/m"
+    pipes = bool(P.get("n_pipes"))
+    rows = []
+    if fan:
+        adv = ("rho_oil*cp_oil*u_fan*W_tank"
+               + ("*L_z" if dim == 3 else "")
+               + "*(aveTop(T) - T_in)")
+        rows += [("aveTop(T)", "degC", "FEA outlet mean T"),
+                 ("Tout_pred", "degC",
+                  "closed-form outlet mean"
+                  + (" (no-pipe reference)" if pipes else
+                     " (the anchor)")),
+                 ("aveTop(T) - Tout_pred", "K",
+                  "deviation from the no-pipe closed form"
+                  if pipes else "DEVIATION - must be ~0"),
+                 ("maxB(T)", "degC", "bar peak T"),
+                 (adv, U, "advected out of the top")]
+        if pipes:
+            rows += [("intPipe(ht.ntflux)", U,
+                      "heat into the water pipes"),
+                     ("intBot(ht.ntflux)", U,
+                      "conductive leak out of the inlet"),
+                     (f"Q_cell{per} - ({adv}) - "
+                      "intPipe(ht.ntflux) - intBot(ht.ntflux)",
+                      U, "BALANCE - must be ~0")]
+        else:
+            rows += [(f"Q_cell{per}", U,
+                      "bar heat (advected + inlet leak = this)")]
+    elif top_fixed:
+        rows += [("maxB(T)", "degC", "bar peak T"),
+                 ("aveB(T)", "degC", "bar average T"),
+                 ("aveAll(T)", "degC",
+                  "tank volume-average T"),
+                 ("intTop(ht.ntflux)", U,
+                  "heat out of the fixed top")]
+        if pipes:
+            rows += [("intPipe(ht.ntflux)", U,
+                      "heat into the water pipes"),
+                     (f"intTop(ht.ntflux) + intPipe(ht.ntflux)"
+                      f" - Q_cell{per}", U,
+                      "BALANCE - must be ~0")]
+        else:
+            rows += [(f"Q_cell{per}", U,
+                      "bar heat (the anchor)"),
+                     (f"intTop(ht.ntflux) - Q_cell{per}", U,
+                      "DEVIATION - must be ~0 at the solution")]
+    else:
+        rows += [("aveAll(T)", "degC", "FEA volume-average T"),
+                 ("T0_C + dTdt_pred*t", "degC",
+                  "exact adiabatic line (the anchor)"),
+                 ("aveAll(T) - (T0_C + dTdt_pred*t)", "K",
+                  "DEVIATION - must be ~0 (sealed)"),
+                 ("maxB(T)", "degC", "bar peak T"),
+                 ("aveB(T)", "degC", "bar average T")]
+    return rows
+
+
+def _eval_java(rows):
+    e = ", ".join(f'"{r[0]}"' for r in rows)
+    u = ", ".join(f'"{r[1]}"' for r in rows)
+    d = ", ".join(f'"{r[2]}"' for r in rows)
+    return (f'    model.result().numerical().create("gev1", '
+            f'"EvalGlobal");\n'
+            f'    model.result().numerical("gev1").set("expr", '
+            f'new String[]{{\n        {e}}});\n'
+            f'    model.result().numerical("gev1").set("unit", '
+            f'new String[]{{\n        {u}}});\n'
+            f'    model.result().numerical("gev1").set("descr", '
+            f'new String[]{{\n        {d}}});\n')
+
+
 def _qcell_rows(P):
     if P.get("heat_mode") == "battery":
         return [
@@ -110,14 +335,17 @@ public class {cls} {{
     prm = [
         ("W_tank", f"{P['W_tank']}[m]", "tank inner width"),
         ("H_tank", f"{P['H_tank']}[m]", "tank inner height"),
-        ("a_cell", f"{P['a_cell']}[m]", "battery square side"),
+        ("b_w", f"{P.get('b_w', P['a_cell'])}[m]",
+         "bar width (x) - one cell diameter in battery-row mode"),
+        ("b_h", f"{P.get('b_h', P['a_cell'])}[m]",
+         "bar height - the cell height in battery-row mode"),
         ("x_off", f"{P['x_off']}[m]",
          "battery centre offset from tank centreline"),
         ("gap_bot", f"{P['gap_bot']}[m]",
          "battery bottom above the tank floor"),
         ("L_z", f"{P['L_z']}[m]", "depth into the plane (for Q only)"),
                 *_qcell_rows(P),
-        ("q_v", "Q_cell/(a_cell^2*L_z)", "volumetric heat in the "
+        ("q_v", "Q_cell/(b_w*b_h*L_z)", "volumetric heat in the "
          "battery"),
         ("k_bat", f"{P['k_bat']}[W/(m*K)]",
          "battery in-plane conductivity"),
@@ -143,14 +371,15 @@ public class {cls} {{
          "fan mode: inlet oil temperature at the floor"),
         ("P_adv", "rho_oil*cp_oil*u_fan/(k_mult*k_oil)",
          "fan mode: advection parameter [1/m]"),
-        ("m_slope", "q_v*a_cell/W_tank/(rho_oil*cp_oil*u_fan)",
+        ("m_slope", "q_v*b_w/W_tank/(rho_oil*cp_oil*u_fan)",
          "fan mode: mean-profile slope in the bar band"),
         ("Tout_pred",
-         "T_in + m_slope*a_cell + (m_slope/P_adv)*"
-         "(exp(-P_adv*(gap_bot+a_cell)) - exp(-P_adv*gap_bot))",
+         "T_in + m_slope*b_h + (m_slope/P_adv)*"
+         "(exp(-P_adv*(gap_bot+b_h)) - exp(-P_adv*gap_bot))",
          "fan mode: EXACT outlet mean temperature (the anchor)"),
-        ("A_cell", "a_cell^2", "battery cross-section"),
-        ("A_oil", "W_tank*H_tank - a_cell^2", "liquid cross-section"),
+        *_pipe_prm_rows(P),
+        ("A_cell", "b_w*b_h", "battery cross-section"),
+        ("A_oil", "W_tank*H_tank - b_w*b_h", "liquid cross-section"),
         ("dTdt_pred",
          "Q_cell/L_z/(rho_bat*cp_bat*A_cell + rho_oil*cp_oil*A_oil)",
          "exact adiabatic heating slope - the correctness anchor"),
@@ -187,12 +416,11 @@ public class {cls} {{
             '        .selection().named("geom1_selOil");\n'
             '    model.component("comp1").physics("ht")'
             '.feature("fld1")\n'
-            '        .set("u", new String[]{"0", "u_fan"});'
+            '        .set("u", new String[]{"0", "u_fan", "0"});'
             '   // primary API\n'
             '    // model.component("comp1").physics("ht")'
             '.feature("fld1")\n'
-            '    //     .set("minput_velocity", '
-            'new String[]{"0", "u_fan"});\n'
+            '    //     .set("minput_velocity", new String[]{"0", "u_fan", "0"});\n'
             '    model.component("comp1").physics("ht")'
             '.create("tin1",\n'
             '        "TemperatureBoundary", 1);\n'
@@ -202,9 +430,11 @@ public class {cls} {{
             '    model.component("comp1").physics("ht")'
             '.feature("tin1")\n'
             '        .set("T0", "T_in");\n'
+            '    // ht outflow node: API ID is ConvectiveOutflow (the plain\n'
+            '    // "Outflow" ID belongs to other interfaces)\n'
             '    model.component("comp1").physics("ht")'
             '.create("out1",\n'
-            '        "Outflow", 1);\n'
+            '        "ConvectiveOutflow", 1);\n'
             '    model.component("comp1").physics("ht")'
             '.feature("out1")\n'
             '        .selection().named("geom1_selTop");\n')
@@ -227,63 +457,7 @@ public class {cls} {{
                   "    // then Results > Derived Values > Evaluate "
                   "All fills the table, and the\n"
                   "    // plot groups render.\n")
-    if fan:
-        evals = """    model.result().numerical().create("gev1", "EvalGlobal");
-    model.result().numerical("gev1").set("expr", new String[]{
-        "aveTop(T)",
-        "Tout_pred",
-        "aveTop(T) - Tout_pred",
-        "maxB(T)",
-        "rho_oil*cp_oil*u_fan*W_tank*(aveTop(T) - T_in)",
-        "Q_cell/L_z"});
-    model.result().numerical("gev1").set("unit", new String[]{
-        "degC", "degC", "K", "degC", "W/m", "W/m"});
-    model.result().numerical("gev1").set("descr", new String[]{
-        "FEA outlet mean T",
-        "EXACT outlet mean (closed form)",
-        "DEVIATION - must be ~0",
-        "bar peak T",
-        "advected out of the top, per metre",
-        "bar heat per metre (advected + inlet leak = this)"});
-"""
-    elif top_fixed:
-        evals = """    model.result().numerical().create("gev1", "EvalGlobal");
-    model.result().numerical("gev1").set("expr", new String[]{
-        "maxB(T)",
-        "aveB(T)",
-        "aveAll(T)",
-        "intTop(ht.ntflux)",
-        "Q_cell/L_z",
-        "intTop(ht.ntflux) - Q_cell/L_z"});
-    model.result().numerical("gev1").set("unit", new String[]{
-        "degC", "degC", "degC", "W/m", "W/m", "W/m"});
-    model.result().numerical("gev1").set("descr", new String[]{
-        "bar peak T",
-        "bar average T",
-        "tank volume-average T",
-        "FEA heat out of the top, per metre",
-        "bar heat per metre (the anchor)",
-        "DEVIATION - must be ~0 at the steady solution"});
-"""
-    else:
-        evals = """    model.result().numerical().create("gev1", "EvalGlobal");
-    model.result().numerical("gev1").set("expr", new String[]{
-        "aveAll(T)",
-        "T0_C + dTdt_pred*t",
-        "aveAll(T) - (T0_C + dTdt_pred*t)",
-        "maxB(T)",
-        "aveB(T)",
-        "maxB(T) - aveAll(T)"});
-    model.result().numerical("gev1").set("unit", new String[]{
-        "degC", "degC", "K", "degC", "degC", "K"});
-    model.result().numerical("gev1").set("descr", new String[]{
-        "FEA volume-average T",
-        "exact adiabatic line (the anchor)",
-        "DEVIATION - must be ~0 (sealed, adiabatic)",
-        "bar peak T",
-        "bar average T",
-        "bar peak above tank average"});
-"""
+    evals = _eval_java(_eval_rows(P, 2, top_fixed, fan))
     pg2 = ("" if steady else
            """    model.result().create("pg2", "PlotGroup1D");
     model.result("pg2").create("glob1", "Global");
@@ -302,23 +476,23 @@ public class {cls} {{
     // the battery: a square inside it (Form Union splits the domains)
     model.component("comp1").geom("geom1").create("r2", "Rectangle");
     model.component("comp1").geom("geom1").feature("r2")
-        .set("size", new String[]{"a_cell", "a_cell"});
+        .set("size", new String[]{"b_w", "b_h"});
     model.component("comp1").geom("geom1").feature("r2")
-        .set("pos", new String[]{"W_tank/2 - a_cell/2 + x_off",
+        .set("pos", new String[]{"W_tank/2 - b_w/2 + x_off",
                                  "gap_bot"});
-    // named selection tightly around the battery domain
+__PIPEGEOM__    // named selection tightly around the battery domain
     model.component("comp1").geom("geom1").create("selCell",
         "BoxSelection");
     model.component("comp1").geom("geom1").feature("selCell")
         .set("entitydim", 2);
     model.component("comp1").geom("geom1").feature("selCell")
-        .set("xmin", "W_tank/2 - a_cell/2 + x_off - 1e-6");
+        .set("xmin", "W_tank/2 - b_w/2 + x_off - 1e-6");
     model.component("comp1").geom("geom1").feature("selCell")
-        .set("xmax", "W_tank/2 + a_cell/2 + x_off + 1e-6");
+        .set("xmax", "W_tank/2 + b_w/2 + x_off + 1e-6");
     model.component("comp1").geom("geom1").feature("selCell")
         .set("ymin", "gap_bot - 1e-6");
     model.component("comp1").geom("geom1").feature("selCell")
-        .set("ymax", "gap_bot + a_cell + 1e-6");
+        .set("ymax", "gap_bot + b_h + 1e-6");
     model.component("comp1").geom("geom1").feature("selCell")
         .set("condition", "inside");
     // the top face, for the fixed-temperature sink and its flux check
@@ -381,7 +555,7 @@ public class {cls} {{
         .named("geom1_selCell");
     model.component("comp1").physics("ht").feature("hs1")
         .set("Q0", "q_v");
-__TOPBC____FAN__    model.component("comp1").physics("ht").feature("init1")
+__TOPBC____FAN____PIPEPHY__    model.component("comp1").physics("ht").feature("init1")
         .set("Tinit", "T0_C");
 
     // operators for the checks
@@ -403,7 +577,7 @@ __TOPBC____FAN__    model.component("comp1").physics("ht").feature("init1")
         .geom("geom1", 1);
     model.component("comp1").cpl("aveTop").selection()
         .named("geom1_selTop");
-
+__PIPECPL__
     model.component("comp1").mesh().create("mesh1");
     model.component("comp1").mesh("mesh1").autoMeshSize(3);
 
@@ -461,6 +635,9 @@ __PG2__
     s = (s.replace("__EXEC__", execs)
          .replace("__TOPBC__", topbc)
          .replace("__FAN__", fanblk)
+         .replace("__PIPEGEOM__", _pipes_geom_2d(P))
+         .replace("__PIPEPHY__", _pipes_physics(P, 2))
+         .replace("__PIPECPL__", _pipes_cpl(P, 2))
          .replace("__STUDY__", study)
          .replace("__EVALS__", evals)
          .replace("__PG2__", pg2)
@@ -484,7 +661,7 @@ def comsol_basic_3d(P):
         top_fixed = False
     steady = bool(P.get("steady", top_fixed or fan))
     build_only = bool(P.get("build_only", False))
-    qv = P["Q_cell"] / (P["a_cell"] ** 2 * P["L_z"])
+    qv = P["Q_cell"] / (P.get("b_w", P["a_cell"]) * P.get("b_h", P["a_cell"]) * P["L_z"])
     s = f"""/*
  * BASIC MODULE in 3D - the WP3 section extruded {P['L_z']*1000:.0f} mm.
  * {DISCLAIMER}
@@ -518,11 +695,14 @@ public class {cls} {{
         ("W_tank", f"{P['W_tank']}[m]", "tank width (x)"),
         ("L_z", f"{P['L_z']}[m]", "tank depth (y)"),
         ("H_tank", f"{P['H_tank']}[m]", "tank height (z)"),
-        ("a_cell", f"{P['a_cell']}[m]", "bar square side"),
+        ("b_w", f"{P.get('b_w', P['a_cell'])}[m]",
+         "bar width (x)"),
+        ("b_h", f"{P.get('b_h', P['a_cell'])}[m]",
+         "bar height (z)"),
         ("x_off", f"{P['x_off']}[m]", "bar offset from centreline"),
         ("gap_bot", f"{P['gap_bot']}[m]", "bar bottom above floor"),
         *_qcell_rows(P),
-        ("q_v", "Q_cell/(a_cell^2*L_z)", "volumetric heat"),
+        ("q_v", "Q_cell/(b_w*b_h*L_z)", "volumetric heat"),
         ("k_bat", f"{P['k_bat']}[W/(m*K)]", "bar conductivity"),
         ("rho_bat", f"{P['rho_bat']}[kg/m^3]", "bar density"),
         ("cp_bat", f"{P['cp_bat']}[J/(kg*K)]", "bar cp"),
@@ -542,15 +722,16 @@ public class {cls} {{
          "fan mode: inlet oil temperature at the floor"),
         ("P_adv", "rho_oil*cp_oil*u_fan/(k_mult*k_oil)",
          "fan mode: advection parameter [1/m]"),
-        ("m_slope", "q_v*a_cell/W_tank/(rho_oil*cp_oil*u_fan)",
+        ("m_slope", "q_v*b_w/W_tank/(rho_oil*cp_oil*u_fan)",
          "fan mode: mean-profile slope in the bar band"),
         ("Tout_pred",
-         "T_in + m_slope*a_cell + (m_slope/P_adv)*"
-         "(exp(-P_adv*(gap_bot+a_cell)) - exp(-P_adv*gap_bot))",
+         "T_in + m_slope*b_h + (m_slope/P_adv)*"
+         "(exp(-P_adv*(gap_bot+b_h)) - exp(-P_adv*gap_bot))",
          "fan mode: EXACT outlet mean temperature (the anchor)"),
+        *_pipe_prm_rows(P),
         ("dTdt_pred",
-         "Q_cell/(rho_bat*cp_bat*a_cell^2*L_z + "
-         "rho_oil*cp_oil*(W_tank*H_tank - a_cell^2)*L_z)",
+         "Q_cell/(rho_bat*cp_bat*b_w*b_h*L_z + "
+         "rho_oil*cp_oil*(W_tank*H_tank - b_w*b_h)*L_z)",
          "exact sealed heating slope"),
     ]
     for k_, v_, d_ in prm:
@@ -563,22 +744,22 @@ public class {cls} {{
         .set("size", new String[]{"W_tank", "L_z", "H_tank"});
     model.component("comp1").geom("geom1").create("blk2", "Block");
     model.component("comp1").geom("geom1").feature("blk2")
-        .set("size", new String[]{"a_cell", "L_z", "a_cell"});
+        .set("size", new String[]{"b_w", "L_z", "b_h"});
     model.component("comp1").geom("geom1").feature("blk2")
-        .set("pos", new String[]{"W_tank/2 - a_cell/2 + x_off", "0",
+        .set("pos", new String[]{"W_tank/2 - b_w/2 + x_off", "0",
                                  "gap_bot"});
-    model.component("comp1").geom("geom1").create("selCell",
+""" + _pipes_geom_3d(P) + """    model.component("comp1").geom("geom1").create("selCell",
         "BoxSelection");
     model.component("comp1").geom("geom1").feature("selCell")
         .set("entitydim", 3);
     model.component("comp1").geom("geom1").feature("selCell")
-        .set("xmin", "W_tank/2 - a_cell/2 + x_off - 1e-6");
+        .set("xmin", "W_tank/2 - b_w/2 + x_off - 1e-6");
     model.component("comp1").geom("geom1").feature("selCell")
-        .set("xmax", "W_tank/2 + a_cell/2 + x_off + 1e-6");
+        .set("xmax", "W_tank/2 + b_w/2 + x_off + 1e-6");
     model.component("comp1").geom("geom1").feature("selCell")
         .set("zmin", "gap_bot - 1e-6");
     model.component("comp1").geom("geom1").feature("selCell")
-        .set("zmax", "gap_bot + a_cell + 1e-6");
+        .set("zmax", "gap_bot + b_h + 1e-6");
     model.component("comp1").geom("geom1").feature("selCell")
         .set("condition", "inside");
     model.component("comp1").geom("geom1").create("selTop",
@@ -655,7 +836,7 @@ public class {cls} {{
     model.component("comp1").physics("ht").feature("tin1")
         .set("T0", "T_in");
     model.component("comp1").physics("ht").create("out1",
-        "Outflow", 2);
+        "ConvectiveOutflow", 2);
     model.component("comp1").physics("ht").feature("out1")
         .selection().named("geom1_selTop");
 """
@@ -667,6 +848,7 @@ public class {cls} {{
     model.component("comp1").physics("ht").feature("temp1")
         .set("T0", "T_top");
 """
+    s += _pipes_physics(P, 3)
     s += """    model.component("comp1").physics("ht").feature("init1")
         .set("Tinit", "T0_C");
 
@@ -688,6 +870,7 @@ public class {cls} {{
         .geom("geom1", 2);
     model.component("comp1").cpl("aveTop").selection()
         .named("geom1_selTop");
+""" + _pipes_cpl(P, 3) + """
 
     model.component("comp1").mesh().create("mesh1");
     model.component("comp1").mesh("mesh1").autoMeshSize(4);
@@ -709,40 +892,8 @@ public class {cls} {{
         s += ('    // BUILD-ONLY: open the .mph, press Compute (F8);'
               ' then Evaluate All\n    // and right-click each'
               ' Export node > Export.\n')
-    if fan:
-        evals = ('"aveTop(T)", "Tout_pred", '
-                 '"aveTop(T) - Tout_pred", "maxB(T)", '
-                 '"rho_oil*cp_oil*u_fan*W_tank*L_z*'
-                 '(aveTop(T) - T_in)", "Q_cell"')
-        units = '"degC", "degC", "K", "degC", "W", "W"'
-        descs = ('"FEA outlet mean T", '
-                 '"EXACT outlet mean (closed form)", '
-                 '"DEVIATION - must be ~0", "bar peak T", '
-                 '"advected out of the top, total", '
-                 '"bar heat (advected + inlet leak = this)"')
-    elif top_fixed:
-        evals = ('"maxB(T)", "aveB(T)", "aveAll(T)", '
-                 '"intTop(ht.ntflux)", "Q_cell", '
-                 '"intTop(ht.ntflux) - Q_cell"')
-        units = '"degC", "degC", "degC", "W", "W", "W"'
-        descs = ('"bar peak T", "bar average T", "volume-average T", '
-                 '"FEA heat out of the top face", '
-                 '"bar heat (the anchor)", '
-                 '"DEVIATION - must be ~0 at the solution"')
-    else:
-        evals = ('"aveAll(T)", "T0_C + dTdt_pred*t", '
-                 '"aveAll(T) - (T0_C + dTdt_pred*t)", "maxB(T)"')
-        units = '"degC", "degC", "K", "degC"'
-        descs = ('"volume-average T", "exact adiabatic line", '
-                 '"DEVIATION - must be ~0", "bar peak T"')
-    s += f"""
-    model.result().numerical().create("gev1", "EvalGlobal");
-    model.result().numerical("gev1").set("expr", new String[]{{
-        {evals}}});
-    model.result().numerical("gev1").set("unit", new String[]{{
-        {units}}});
-    model.result().numerical("gev1").set("descr", new String[]{{
-        {descs}}});
+    evals = _eval_java(_eval_rows(P, 3, top_fixed, fan))
+    s += evals + f"""
     model.result().table().create("tbl1", "Table");
     model.result().numerical("gev1").set("table", "tbl1");
     model.result().export().create("texp1", "Table");

@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.22"
+APP_VERSION = "v10.23"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -2218,7 +2218,7 @@ def parse_comsol_field(text):
             s / c, info)
 
 
-def wp3_series_field(x, y, W, H, a, xc, gap, q_v, k, T_top,
+def wp3_series_field(x, y, W, H, bw, bh, xc, gap, q_v, k, T_top,
                      nmax=90):
     """Analytical (eigenfunction-series) steady field for the basic
     module with UNIFORM conductivity k: Poisson source q_v on the bar
@@ -2231,14 +2231,14 @@ def wp3_series_field(x, y, W, H, a, xc, gap, q_v, k, T_top,
     so field comparisons mask the bar footprint and the bar estimate
     is the series average over it."""
     x = np.asarray(x); y = np.asarray(y)
-    x0, x1 = xc - a / 2, xc + a / 2
-    y0, y1 = gap, gap + a
+    x0, x1 = xc - bw / 2, xc + bw / 2
+    y0, y1 = gap, gap + bh
     X, Y = np.meshgrid(x, y)
-    c0 = q_v * a / W
-    I = np.where(Y >= y1, a * (H - Y),
+    c0 = q_v * bw / W
+    I = np.where(Y >= y1, bh * (H - Y),
         np.where(Y >= y0,
-                 (a ** 2 - (Y - y0) ** 2) / 2 + a * (H - y1),
-                 a ** 2 / 2 + a * (H - y1)))
+                 (bh ** 2 - (Y - y0) ** 2) / 2 + bh * (H - y1),
+                 bh ** 2 / 2 + bh * (H - y1)))
     T = T_top + (c0 / k) * I
     nmax = min(nmax, max(int(300.0 * W / (math.pi * H)), 8))
     for n in range(1, nmax + 1):
@@ -2262,35 +2262,35 @@ def wp3_series_field(x, y, W, H, a, xc, gap, q_v, k, T_top,
     return T
 
 
-def wp3_exact_mean(y, W, H, a, gap, q_v, k, T_top):
+def wp3_exact_mean(y, W, H, bw, bh, gap, q_v, k, T_top):
     """EXACT horizontal-plane mean temperature (energy integral, no
     approximation): flat below the bar, quadratic across the band,
     linear with slope Q'/(kW) above it, T_top at the lid."""
     y = np.asarray(y)
-    c0 = q_v * a / W
-    y0, y1 = gap, gap + a
-    I = np.where(y >= y1, a * (H - y),
+    c0 = q_v * bw / W
+    y0, y1 = gap, gap + bh
+    I = np.where(y >= y1, bh * (H - y),
         np.where(y >= y0,
-                 (a ** 2 - (y - y0) ** 2) / 2 + a * (H - y1),
-                 a ** 2 / 2 + a * (H - y1)))
+                 (bh ** 2 - (y - y0) ** 2) / 2 + bh * (H - y1),
+                 bh ** 2 / 2 + bh * (H - y1)))
     return T_top + (c0 / k) * I
 
 
-def wp3_check_field(x, y, T, W, H, a, xc, gap, q_v, k, T_top):
+def wp3_check_field(x, y, T, W, H, bw, bh, xc, gap, q_v, k, T_top):
     """Judge an uploaded field: rigorous integral anchors first, then
     agreement with the analytical series outside the bar."""
     order = np.argsort(y)
     y = np.asarray(y)[order]; T = np.asarray(T)[order, :]
     xo = np.argsort(x); x = np.asarray(x)[xo]; T = T[:, xo]
     rm = np.nanmean(T, axis=1)
-    y0, y1 = gap, gap + a
+    y0, y1 = gap, gap + bh
     m = dict()
     m["top_dev"] = float(abs(rm[-1] - T_top))
     below = y < y0 - 0.02 * H
     m["below_flat"] = float(rm[below].max() - rm[below].min()) \
         if below.sum() > 2 else 0.0
     above = y > y1 + 0.05 * H
-    slope_exact = -q_v * a * a / (k * W)
+    slope_exact = -q_v * bw * bh / (k * W)
     if above.sum() > 3:
         A_ = np.vstack([y[above], np.ones(above.sum())]).T
         sl = float(np.linalg.lstsq(A_, rm[above], rcond=None)[0][0])
@@ -2299,15 +2299,15 @@ def wp3_check_field(x, y, T, W, H, a, xc, gap, q_v, k, T_top):
                                abs(slope_exact))
     else:
         m["slope_rel"] = 0.0
-    Ts = wp3_series_field(x, y, W, H, a, xc, gap, q_v, k, T_top)
+    Ts = wp3_series_field(x, y, W, H, bw, bh, xc, gap, q_v, k, T_top)
     X, Y = np.meshgrid(x, y)
-    bar = ((X > xc - a / 2 - 0.02 * W) & (X < xc + a / 2 + 0.02 * W)
+    bar = ((X > xc - bw / 2 - 0.02 * W) & (X < xc + bw / 2 + 0.02 * W)
            & (Y > y0 - 0.02 * H) & (Y < y1 + 0.02 * H))
     d = (T - Ts)[~bar & ~np.isnan(T)]
     m["rms_out"] = float(np.sqrt(np.mean(d ** 2)))
     m["max_out"] = float(np.max(np.abs(d)))
     m["T_peak"] = float(np.nanmax(T))
-    inbar = ((X >= xc - a / 2) & (X <= xc + a / 2) & (Y >= y0)
+    inbar = ((X >= xc - bw / 2) & (X <= xc + bw / 2) & (Y >= y0)
              & (Y <= y1))
     m["T_bar_series"] = float(np.mean(Ts[inbar])) if inbar.any() \
         else float("nan")
@@ -2315,13 +2315,13 @@ def wp3_check_field(x, y, T, W, H, a, xc, gap, q_v, k, T_top):
                        m["below_flat"] < 0.08 and
                        m["slope_rel"] < 0.05)
     m["Ts"] = Ts; m["mean_num"] = rm
-    m["mean_exact"] = wp3_exact_mean(y, W, H, a, gap, q_v, k, T_top)
+    m["mean_exact"] = wp3_exact_mean(y, W, H, bw, bh, gap, q_v, k, T_top)
     m["x"] = x; m["y"] = y; m["T"] = T
     return m
 
 
 
-def fan_mean_exact(y, W, H, a, gap, q_v, k, rho, cp, u, T_in):
+def fan_mean_exact(y, W, H, bw, bh, gap, q_v, k, rho, cp, u, T_in):
     """EXACT plane-mean profile for the fan rung: upward speed u,
     inlet Dirichlet T_in at the floor, outflow at the lid, sides
     adiabatic. Integrating the 2D equation over x gives the 1D ODE
@@ -2332,13 +2332,13 @@ def fan_mean_exact(y, W, H, a, gap, q_v, k, rho, cp, u, T_in):
     advected out of the top plus the conductive leak back through
     the inlet equals Q' identically."""
     y = np.asarray(y, float)
-    y0, y1 = gap, gap + a
+    y0, y1 = gap, gap + bh
     P = rho * cp * u / k
-    qbar = q_v * a / W
+    qbar = q_v * bw / W
     m = qbar / (rho * cp * u)
     e0 = math.exp(-P * y0)
     e1 = math.exp(-P * y1)
-    A3 = m * a + (m / P) * (e1 - e0)
+    A3 = m * bh + (m / P) * (e1 - e0)
     ex = lambda arg: np.exp(np.minimum(arg, 0.0))
     th_lo = (m / P) * ((ex(P * (y - y0)) - ex(P * (y - y1)))
                        - (e0 - e1))
@@ -2351,7 +2351,7 @@ def fan_mean_exact(y, W, H, a, gap, q_v, k, rho, cp, u, T_in):
         cond_bottom_W_per_m=k * W * m * (e0 - e1))
 
 
-def fan_check_field(x, y, T, W, H, a, xc, gap, q_v, k, rho, cp, u,
+def fan_check_field(x, y, T, W, H, bw, bh, xc, gap, q_v, k, rho, cp, u,
                     T_in):
     """Judge a fan-rung field: inlet row at T_in, plane-mean profile
     against the exact closed form, outlet mean against the exact
@@ -2362,7 +2362,7 @@ def fan_check_field(x, y, T, W, H, a, xc, gap, q_v, k, rho, cp, u,
     y = np.asarray(y)[order]; T = np.asarray(T)[order, :]
     xo = np.argsort(x); x = np.asarray(x)[xo]; T = T[:, xo]
     rm = np.nanmean(T, axis=1)
-    ex, info = fan_mean_exact(y, W, H, a, gap, q_v, k, rho, cp, u,
+    ex, info = fan_mean_exact(y, W, H, bw, bh, gap, q_v, k, rho, cp, u,
                               T_in)
     m = dict(info)
     m["inlet_dev"] = float(abs(rm[0] - T_in))
@@ -2967,8 +2967,29 @@ def fea_tab(d, g, fl, cool_df, loop):
         "from your CFD report) IS the circulation's Nusselt number. "
         "Every input is a named parameter in the exported files.")
 
+    st.markdown(
+        "**The test order** - do these in sequence, each step "
+        "proves the next one's foundation: **1)** Load the "
+        "benchmark, download both files, run them, upload the two "
+        "`_upload_to_app.txt` files here - anchors and the "
+        "three-way comparison must pass. **2)** Press the "
+        "calibrate button on the fixed-top upload to set the "
+        "k-multiplier from your own run. **3)** Switch the heat "
+        "source to the battery model at your design current "
+        "(same Q drives the analytical anchors and the COMSOL "
+        "files). **4)** Switch Configuration to Fan upflow, "
+        "re-run both files, upload - the outlet-mean anchor must "
+        "pass; calibrate the fan speed if you ran a different "
+        "one. **5)** Tick the water pipes, set count/size/film, "
+        "re-run - judge by the BALANCE row in the summary "
+        "table. **6)** Switch Bar geometry to Battery row and "
+        "repeat 3-5 on the real cell sizes.")
+
     def _wp3():
-        st.session_state.update(fxb_w=25.0, fxb_h=30.0, fxb_a=5.0, fxb_lz=300.0,
+        st.session_state.update(fxb_w=25.0, fxb_h=30.0,
+                  fxb_gm="Custom bar",
+                  fxb_bw=5.0, fxb_bh=5.0, fxb_lz=300.0,
+                  fxb_pipes=False,
                   fxb_gap=10.0, fxb_xo=0.0, fxb_q=0.75, fxb_t0=25.0,
                   fxb_mat="Aluminium (benchmark values)",
                   fx_fluid="Deionized water",
@@ -2987,11 +3008,38 @@ def fea_tab(d, g, fl, cool_df, loop):
                          0.1, format="%.1f", key="fxb_w") / 1000
     Ht = c2.number_input("Tank height [mm]", 5.0, 400.0, 30.0,
                          0.1, format="%.1f", key="fxb_h") / 1000
-    a = c3.number_input("Bar side [mm]", 1.0, 80.0, 5.0, 0.1,
-                        format="%.1f", key="fxb_a") / 1000
-    Lz = c4.number_input("Depth into the plane [mm]", 10.0,
-                         2000.0, 300.0, 1.0, format="%.0f",
-                         key="fxb_lz") / 1000
+    gmode = c3.selectbox("Bar geometry",
+                         ["Custom bar",
+                          "Battery row (count × cell size)"],
+                         key="fxb_gm")
+    if gmode.startswith("Battery"):
+        bb1, bb2, bb3, bb4 = st.columns(4)
+        n_cells = bb1.number_input("Cells in the row", 1, 200, 10,
+                                   1, key="fxb_nc")
+        cell_d = bb2.number_input("Cell diameter [mm]", 5.0, 80.0,
+                                  21.0, 0.1, format="%.1f",
+                                  key="fxb_cd") / 1000
+        cell_h = bb3.number_input("Cell height [mm]", 10.0, 200.0,
+                                  70.0, 0.1, format="%.1f",
+                                  key="fxb_ch") / 1000
+        b_w, b_h = cell_d, cell_h
+        Lz = n_cells * cell_d
+        bb4.metric("Row depth (= n × d)", f"{Lz*1000:.0f} mm")
+        st.caption("Battery-row mode: the 2D bar is one cell's "
+                   "cross-section (d wide, h tall) and the 3D "
+                   "block is EXACTLY the row - d × h × (n·d). "
+                   "The depth field is derived, not typed.")
+    else:
+        b_w = c4.number_input("Bar width [mm]", 1.0, 120.0, 5.0,
+                              0.1, format="%.1f",
+                              key="fxb_bw") / 1000
+        cc0, cc1_, _ = st.columns(3)
+        b_h = cc0.number_input("Bar height [mm]", 1.0, 200.0, 5.0,
+                               0.1, format="%.1f",
+                               key="fxb_bh") / 1000
+        Lz = cc1_.number_input("Depth into the plane [mm]", 10.0,
+                               4000.0, 300.0, 1.0, format="%.0f",
+                               key="fxb_lz") / 1000
     c1, c2, c3, c4 = st.columns(4)
     gap = c1.number_input("Bar bottom above the floor [mm]", 0.0,
                           300.0, 10.0, 0.1, format="%.1f",
@@ -3027,7 +3075,9 @@ def fea_tab(d, g, fl, cool_df, loop):
                    + "** - the exported COMSOL files carry "
                    "I_cell, R0_cell, R1_cell as named parameters "
                    "with Q_cell defined from them, so the current "
-                   "is sweepable inside COMSOL itself.")
+                   "is sweepable inside COMSOL itself. The same Q "
+                   "drives every analytical anchor on this page - "
+                   "one current, three models.")
     else:
         I_cell, R0c, R1c = 0.0, 0.0, 0.0
         Q = st.number_input("Bar heat, total [W]", 0.01, 200.0,
@@ -3094,14 +3144,53 @@ def fea_tab(d, g, fl, cool_df, loop):
     km = cc1.number_input("Liquid effective-k multiplier (1 = "
                           "pure conduction)", 0.5, 30.0, 1.0,
                           0.05, format="%.2f", key="fxb_km")
-    tend = cc2.slider("Transient time [min]", 5.0, 240.0, 30.0, 5.0,
-                      key="fxb_te") * 60.0
+    if not steady:
+        tend = cc2.slider("Transient time [min]", 5.0, 240.0,
+                          30.0, 5.0, key="fxb_te") * 60.0
+    else:
+        tend = 1800.0
+        cc2.caption("Transient time: not applicable to a "
+                    "stationary study.")
     build_only = cc3.checkbox(
         "Build-only (java -> mph in seconds; press Compute in the "
         "Desktop)", False, key="fxb_bo")
+    use_pipes = st.checkbox(
+        "Water pipes at the top (circular channels; walls get the "
+        "water-side film h_w to T_w)", False, key="fxb_pipes",
+        disabled=(not top_fixed and not fan))
+    if (not top_fixed and not fan) and st.session_state.get(
+            "fxb_pipes"):
+        st.caption("Pipes are unavailable in the sealed "
+                   "configuration - a sealed tank with a sink is "
+                   "no longer sealed.")
+    n_pipes, d_pipe, pipe_drop, h_w, T_w = 0, 0.008, 0.007, \
+        1500.0, 20.0
+    if use_pipes and (top_fixed or fan):
+        pp1, pp2, pp3, pp4, pp5 = st.columns(5)
+        n_pipes = pp1.number_input("Number of pipes", 1, 12, 3, 1,
+                                   key="fxb_np")
+        d_pipe = pp2.number_input("Pipe OD [mm]", 2.0, 30.0, 8.0,
+                                  0.1, format="%.1f",
+                                  key="fxb_pd") / 1000
+        pipe_drop = pp3.number_input("Centre below the lid [mm]",
+                                     2.0, 100.0, 7.0, 0.1,
+                                     format="%.1f",
+                                     key="fxb_pdr") / 1000
+        h_w = pp4.number_input("Water film h_w [W/m²K]", 100.0,
+                               20000.0, 1500.0, 50.0,
+                               key="fxb_hw")
+        T_w = pp5.number_input("Water T_w [°C]", 0.0, 60.0, 20.0,
+                               0.5, key="fxb_tw")
+        st.caption("With pipes the closed-form anchors no longer "
+                   "apply exactly (heat leaves mid-height); the "
+                   "exported models add pipe-heat and BALANCE "
+                   "rows to the summary table - judge by "
+                   "those.")
+    else:
+        use_pipes = False
 
     cfl = fluid_dict(cool_df[cool_df["name"] == fx_fl].iloc[0])
-    P = fea_p_basic(cfl, Wt, Ht, a, xoff, gap, Lz, Q, kb, rb, cb,
+    P = fea_p_basic(cfl, Wt, Ht, b_w, xoff, gap, Lz, Q, kb, rb, cb,
                     T0, tend, max(tend / 30.0, 10.0), 0.0, 25.0)
     # fixed names: every 2D export is ipl2d, every 3D export is
     # ipl3d, whatever the variant - both are generated on every
@@ -3112,8 +3201,12 @@ def fea_tab(d, g, fl, cool_df, loop):
                        ("top" if top_fixed else "sealed"),
              u_fan=u_fan, T_in=T_in,
              heat_mode="battery" if bat_mode else "manual",
-             I_cell=I_cell, R0_cell=R0c, R1_cell=R1c)
-    qv = Q / (a * a * Lz)
+             I_cell=I_cell, R0_cell=R0c, R1_cell=R1c,
+             b_w=b_w, b_h=b_h,
+             n_pipes=(n_pipes if use_pipes else 0),
+             d_pipe=d_pipe, pipe_drop=pipe_drop, h_w=h_w,
+             T_w=T_w)
+    qv = Q / (b_w * b_h * Lz)
 
     cx1, cx2 = st.columns([1.4, 1])
     with cx1:
@@ -3127,7 +3220,8 @@ def fea_tab(d, g, fl, cool_df, loop):
                                      x=0.01, font=dict(size=13)))
         fig.update_xaxes(visible=False)
         fig.update_yaxes(visible=False, scaleanchor="x")
-        Wm, Hm, am = Wt * 1000, Ht * 1000, a * 1000
+        Wm, Hm = Wt * 1000, Ht * 1000
+        bwm, bhm = b_w * 1000, b_h * 1000
         gm, xm = gap * 1000, xoff * 1000
         fig.add_shape(type="rect", x0=0, y0=0, x1=Wm, y1=Hm,
                       fillcolor="rgba(129,140,248,.25)",
@@ -3143,9 +3237,9 @@ def fea_tab(d, g, fl, cool_df, loop):
                                    ayref="y", showarrow=True,
                                    arrowhead=3, arrowwidth=2,
                                    arrowcolor="#0EA5E9")
-        bx0 = Wm / 2 - am / 2 + xm
-        fig.add_shape(type="rect", x0=bx0, y0=gm, x1=bx0 + am,
-                      y1=gm + am,
+        bx0 = Wm / 2 - bwm / 2 + xm
+        fig.add_shape(type="rect", x0=bx0, y0=gm, x1=bx0 + bwm,
+                      y1=gm + bhm,
                       fillcolor="rgba(250,204,21,.85)",
                       line=dict(color="#A16207", width=2))
         fig.add_annotation(x=Wm / 2, y=Hm + Hm * 0.07,
@@ -3165,14 +3259,32 @@ def fea_tab(d, g, fl, cool_df, loop):
                                  "sides and bottom adiabatic"),
                            showarrow=False,
                            font=dict(size=10, color="#475569"))
-        fig.add_annotation(x=bx0 + am / 2, y=gm + am / 2,
+        fig.add_annotation(x=bx0 + bwm / 2, y=gm + bhm / 2,
                            text="bar", showarrow=False,
                            font=dict(size=9, color="#713F12"))
-        fig.add_annotation(x=bx0 + am + Wm * 0.02, y=gm + am / 2,
-                           text=f"{am:.0f} mm, {gm:.0f} mm off the "
-                                f"floor",
+        fig.add_annotation(x=bx0 + bwm + Wm * 0.02,
+                           y=gm + bhm / 2,
+                           text=f"{bwm:.1f} × {bhm:.1f} mm, "
+                                f"{gm:.0f} mm off the floor",
                            showarrow=False, xanchor="left",
                            font=dict(size=9, color="#A16207"))
+        if use_pipes and n_pipes:
+            rp = d_pipe / 2 * 1000
+            zc = Hm - pipe_drop * 1000
+            for kpi in range(int(n_pipes)):
+                xc_p = Wm * (2 * kpi + 1) / (2 * n_pipes)
+                fig.add_shape(type="circle",
+                              x0=xc_p - rp, x1=xc_p + rp,
+                              y0=zc - rp, y1=zc + rp,
+                              fillcolor="rgba(56,189,248,.55)",
+                              line=dict(color="#0369A1",
+                                        width=1.5))
+            fig.add_annotation(x=Wm * 0.02, y=zc,
+                               text=f"{int(n_pipes)}× water "
+                                    f"pipes, T_w = {T_w:.0f} °C",
+                               showarrow=False, xanchor="left",
+                               font=dict(size=9,
+                                         color="#0369A1"))
         st.plotly_chart(fig, width='stretch', key="fxb_fig")
     with cx2:
         st.metric("Volumetric heat q_v", f"{qv:,.0f} W/m³")
@@ -3186,7 +3298,8 @@ def fea_tab(d, g, fl, cool_df, loop):
                    "export directly.")
         if fan:
             _fm, _fi = fan_mean_exact(
-                np.array([Ht]), Wt, Ht, a, gap, Q / (a * a * Lz),
+                np.array([Ht]), Wt, Ht, b_w, b_h, gap,
+                Q / (b_w * b_h * Lz),
                 km * P["k_oil"], P["rho_oil"], P["cp_oil"], u_fan,
                 T_in)
             st.metric("Exact outlet mean (the anchor)",
@@ -3309,14 +3422,38 @@ def fea_tab(d, g, fl, cool_df, loop):
                 "agreement, measured; the report's Fluent pair "
                 "differed by ~20 mK. Checking the mid-depth slice "
                 "below.")
+        if use_pipes:
+            st.info(
+                f"{up.name}: pipes are present, so the "
+                "closed-form anchors do not apply - judge this "
+                "run by the pipe-heat and BALANCE rows in its "
+                "summary table (upload it too). Field shown for "
+                "inspection.")
+            fgp = go.Figure(go.Heatmap(
+                x=fx_ * 1000, y=fy_ * 1000, z=fT_,
+                colorscale="Turbo", colorbar=dict(thickness=10)))
+            fgp.update_layout(height=320, margin=dict(l=6, r=6,
+                              t=28, b=6),
+                              yaxis=dict(scaleanchor="x"),
+                              title=dict(text="Numerical field "
+                                         "(pipes case)",
+                                         font=dict(size=12),
+                                         x=0.02))
+            st.plotly_chart(fgp, width='stretch',
+                            key=f"fx_pipe_{up.name}")
+            st.session_state.setdefault("fx_fields", {})[
+                up.name] = (fx_, fy_, fT_)
+            continue
         if fan:
-            m = fan_check_field(fx_, fy_, fT_, Wt, Ht, a, xc_, gap,
-                                Q / (a * a * Lz), k_eff,
+            m = fan_check_field(fx_, fy_, fT_, Wt, Ht, b_w, b_h,
+                                xc_, gap,
+                                Q / (b_w * b_h * Lz), k_eff,
                                 P["rho_oil"], P["cp_oil"], u_fan,
                                 T_in)
         else:
-            m = wp3_check_field(fx_, fy_, fT_, Wt, Ht, a, xc_, gap,
-                                Q / (a * a * Lz), k_eff, Ttop)
+            m = wp3_check_field(fx_, fy_, fT_, Wt, Ht, b_w, b_h,
+                                xc_, gap,
+                                Q / (b_w * b_h * Lz), k_eff, Ttop)
         st.session_state.setdefault("fx_fields", {})[up.name] = (
             fx_, fy_, fT_)
         _fchecks.append((up.name, finf, m))
@@ -4437,7 +4574,7 @@ def smoke():
           f"{_pb['dTdt_pred']*60:.4f} K/min, both variants OK")
     # ---- WP3 analytics roundtrip: series -> file -> parse -> check
     _x = np.linspace(0, 0.025, 61); _y = np.linspace(0, 0.030, 73)
-    _T = wp3_series_field(_x, _y, 0.025, 0.030, 0.005, 0.0125,
+    _T = wp3_series_field(_x, _y, 0.025, 0.030, 0.005, 0.005, 0.0125,
                           0.010, 1e5, 0.6, 25.0)
     _dy = _y[-1] - _y[-2]
     _Qp = np.trapezoid(-0.6 * (_T[-1, :] - _T[-2, :]) / _dy, _x)
@@ -4449,13 +4586,13 @@ def smoke():
     assert _inf["kind"] == "2d"
     assert _Tp.shape == _T.shape and \
         np.nanmax(np.abs(_Tp - _T)) < 1e-6
-    _m = wp3_check_field(_xu, _yu, _Tp, 0.025, 0.030, 0.005,
+    _m = wp3_check_field(_xu, _yu, _Tp, 0.025, 0.030, 0.005, 0.005,
                          0.0125, 0.010, 1e5, 0.6, 25.0)
     assert _m["anchors_ok"] and _m["rms_out"] < 1e-6
     _X, _Y = np.meshgrid(_xu, _yu)
     _mb = wp3_check_field(_xu, _yu, _Tp + 0.3 * np.exp(
         -((_X - 0.02) ** 2 + (_Y - 0.02) ** 2) / 1e-5),
-        0.025, 0.030, 0.005, 0.0125, 0.010, 1e5, 0.6, 25.0)
+        0.025, 0.030, 0.005, 0.005, 0.0125, 0.010, 1e5, 0.6, 25.0)
     assert _mb["rms_out"] > 0.03, "checker must flag a bad field"
     # ---- 3D: generator markers + 4-column roundtrip with z-check
     _p3 = dict(_pb, cls="ipl_wp3_report_3d")
@@ -4475,7 +4612,7 @@ def smoke():
     assert _i3["kind"] == "3d" and _i3["depth_n"] == 9
     assert _i3["zvar"] < 1e-9, "tiled field must be z-invariant"
     assert np.nanmax(np.abs(_Ts3 - _T)) < 1e-6
-    _m3 = wp3_check_field(_x3, _z3, _Ts3, 0.025, 0.030, 0.005,
+    _m3 = wp3_check_field(_x3, _z3, _Ts3, 0.025, 0.030, 0.005, 0.005,
                           0.0125, 0.010, 1e5, 0.6, 25.0)
     assert _m3["anchors_ok"] and _m3["rms_out"] < 1e-6
     # perturb one depth plane and require zvar to flag it
@@ -4509,7 +4646,7 @@ def smoke():
     for _u in (0.01, 0.0005):
         _yy, _Tfd = _fd(0.025, 0.030, 0.005, 0.010, 1e5, 0.6,
                         997.0, 4180.0, _u, 25.0)
-        _Tan, _fi = fan_mean_exact(_yy, 0.025, 0.030, 0.005,
+        _Tan, _fi = fan_mean_exact(_yy, 0.025, 0.030, 0.005, 0.005,
                                    0.010, 1e5, 0.6, 997.0,
                                    4180.0, _u, 25.0)
         assert np.max(np.abs(_Tan - _Tfd)) < 1e-3
@@ -4521,10 +4658,47 @@ def smoke():
     _jf2 = _FX.comsol_basic_2d(dict(_pf, cls="ipl2d"))
     _jf3 = _FX.comsol_basic_3d(dict(_pf, cls="ipl3d"))
     assert "FluidHeatTransferModel" in _jf2 and \
-        '{"0", "u_fan"}' in _jf2 and "Tout_pred" in _jf2 and \
-        '"Outflow"' in _jf2 and 'feature("temp1")' not in _jf2
+        '{"0", "u_fan", "0"}' in _jf2 and "Tout_pred" in _jf2 \
+        and '"ConvectiveOutflow"' in _jf2 \
+        and 'feature("temp1")' not in _jf2
     assert '{"0", "0", "u_fan"}' in _jf3 and \
-        "Tout_pred" in _jf3 and '"Outflow"' in _jf3
+        "Tout_pred" in _jf3 and '"ConvectiveOutflow"' in _jf3
+    # rectangular bar + water pipes: markers in both dims
+    _pp = dict(_pb, b_w=0.021, b_h=0.070, n_pipes=3,
+               d_pipe=0.008, pipe_drop=0.007, h_w=1800.0,
+               T_w=20.0)
+    _jp2 = _FX.comsol_basic_2d(dict(_pp, cls="iplX"))
+    _jp3 = _FX.comsol_basic_3d(dict(_pp, cls="iplX"))
+    assert _jp2.count('"Circle"') == 3 and '"Difference"' in _jp2
+    assert "BALANCE - must be ~0" in _jp2 and \
+        'set("h", "h_w")' in _jp2 and '"b_w", "b_h"' in _jp2
+    assert _jp3.count('"Cylinder"') == 3 and \
+        '"axistype", "y"' in _jp3 and "BALANCE" in _jp3
+    # rectangular fan analytics: closed form vs FD, bw != bh
+    def _fdr(WW, HH, bw_, bh_, gg, qq, kk, rr, cc, uu, Ti,
+             N=3000):
+        yy = np.linspace(0, HH, N); hh = yy[1] - yy[0]
+        qb = np.where((yy >= gg) & (yy <= gg + bh_),
+                      qq * bw_ / WW, 0.0)
+        lo = kk / hh ** 2 + rr * cc * uu / (2 * hh)
+        di = -2 * kk / hh ** 2
+        up_ = kk / hh ** 2 - rr * cc * uu / (2 * hh)
+        A_ = np.zeros((N, N)); b_ = -qb.copy()
+        idx = np.arange(1, N - 1)
+        A_[idx, idx - 1] = lo; A_[idx, idx] = di
+        A_[idx, idx + 1] = up_
+        A_[0, 0] = 1; b_[0] = Ti
+        A_[-1, -1] = 1; A_[-1, -2] = -1; b_[-1] = 0
+        return yy, np.linalg.solve(A_, b_)
+    _yyr, _Tfr = _fdr(0.025, 0.030, 0.004, 0.012, 0.008, 1e5,
+                      0.6, 997.0, 4180.0, 0.001, 25.0)
+    _Tar, _fir = fan_mean_exact(_yyr, 0.025, 0.030, 0.004, 0.012,
+                                0.008, 1e5, 0.6, 997.0, 4180.0,
+                                0.001, 25.0)
+    assert np.max(np.abs(_Tar - _Tfr)) < 2e-3
+    _resr = (_fir["adv_W_per_m"] + _fir["cond_bottom_W_per_m"]
+             - 1e5 * 0.004 * 0.012)
+    assert abs(_resr) < 1e-9, "rect fan energy split must be exact"
     _jfb = _FX.comsol_basic_2d(dict(_pf, cls="ipl2d",
                                     build_only=True))
     assert 'std1").run()' not in _jfb

@@ -587,6 +587,16 @@ thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
 
+## v10.23
+
+Your first real fan-mode compile logs closed two COMSOL 6.4 API facts, and the front-view architecture arrived: battery-row geometry and water pipes.
+
+- The two 6.4 errors, fixed: the Fluid feature's velocity is stored as a length-3 vector EVEN IN 2D (the property name "u" itself was accepted - now {"0","u_fan","0"} in 2D); and the heat-transfer outflow node's API ID is ConvectiveOutflow (plain "Outflow" belongs to other physics interfaces). Both builders corrected; the stub checker also gained the selection().set(String[]/int[]/double[]) overloads the pipe code needs.
+- Bar geometry from the battery: a "Bar geometry" selector. Battery-row mode takes cell count, diameter and height - the 2D bar becomes one cell's cross-section (d wide, h tall) and the 3D block becomes EXACTLY the row, d x h x (n*d), with the depth derived, not typed. Custom mode keeps typed width/height. Both COMSOL builders, all five analytical functions (series, exact mean, both checkers, fan closed form) and the smoke FD proofs generalised from the square to b_w x b_h; the closed-form energy split verified exact for a rectangular bar too.
+- Water pipes in the liquid: tick the box, set count, OD, depth below the lid, water film h_w and T_w. The builders subtract real circular channels (Circles in 2D, axis-along-depth Cylinders in 3D) whose walls carry the convective water film, and the summary table gains pipe-heat and BALANCE rows (advected + pipes + inlet leak = bar heat) because the closed-form anchors honestly no longer apply mid-height - the checker says so and shows the field for inspection instead of judging it.
+- The test order, written down: a six-step numbered sequence at the top of the FEA tab (benchmark -> calibrate k -> battery current -> fan -> pipes -> battery-row sizes). Sections now hide when inapplicable: transient time only for transient studies, pipes disabled in sealed with the reason stated, fan fields only in fan mode.
+- One current, three models: the battery-current heat source already drives the analytical anchors and both COMSOL files from the same Q; the caption now says so explicitly.
+
 ## v10.22
 
 Three user-raised improvements plus the acronym purge.
