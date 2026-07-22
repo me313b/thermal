@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.12"
+APP_VERSION = "v10.13"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -2141,6 +2141,155 @@ def learn_tab(d, g, fl, res, masses, cool_df, loop, Q_duty, chil):
 # ------------------------------------------------------------------ #
 #  FEA export - operating-point builders (shared by tab and smoke)   #
 # ------------------------------------------------------------------ #
+
+# ------------------------------------------------------------------ #
+#  WP3 basic-module analytics: parse a COMSOL field export, build    #
+#  the analytical series solution, and judge the run.                #
+# ------------------------------------------------------------------ #
+def parse_comsol_field(text):
+    """COMSOL spreadsheet Data export -> (x_1d, y_1d, T_2d[ny,nx]).
+    Skips %-header lines; takes the first three numeric columns as
+    x, y, T. Handles the regular-grid export directly and falls back
+    to bin-averaging for scattered (mesh-node) exports."""
+    xs, ys, ts = [], [], []
+    for ln in text.splitlines():
+        ln = ln.strip()
+        if not ln or ln.startswith("%"):
+            continue
+        parts = ln.replace(",", " ").split()
+        vals = []
+        for p_ in parts:
+            try:
+                vals.append(float(p_))
+            except ValueError:
+                break
+        if len(vals) >= 3:
+            xs.append(vals[0]); ys.append(vals[1]); ts.append(vals[2])
+    if len(ts) < 50:
+        raise ValueError("not a recognisable COMSOL field export "
+                         f"({len(ts)} data rows found)")
+    x = np.asarray(xs); y = np.asarray(ys); T = np.asarray(ts)
+    xu = np.unique(np.round(x, 9)); yu = np.unique(np.round(y, 9))
+    if len(xu) * len(yu) == len(T):
+        ix = np.searchsorted(xu, np.round(x, 9))
+        iy = np.searchsorted(yu, np.round(y, 9))
+        G = np.full((len(yu), len(xu)), np.nan)
+        G[iy, ix] = T
+        if not np.isnan(G).any():
+            return xu, yu, G
+    nx, ny = 61, 73
+    xe = np.linspace(x.min(), x.max(), nx + 1)
+    ye = np.linspace(y.min(), y.max(), ny + 1)
+    s = np.zeros((ny, nx)); c = np.zeros((ny, nx))
+    ix = np.clip(np.searchsorted(xe, x) - 1, 0, nx - 1)
+    iy = np.clip(np.searchsorted(ye, y) - 1, 0, ny - 1)
+    np.add.at(s, (iy, ix), T); np.add.at(c, (iy, ix), 1.0)
+    c[c == 0] = np.nan
+    return (0.5 * (xe[1:] + xe[:-1]), 0.5 * (ye[1:] + ye[:-1]),
+            s / c)
+
+
+def wp3_series_field(x, y, W, H, a, xc, gap, q_v, k, T_top,
+                     nmax=90):
+    """Analytical (eigenfunction-series) steady field for the basic
+    module with UNIFORM conductivity k: Poisson source q_v on the bar
+    footprint, adiabatic sides and bottom, T_top on the lid. Modes
+    cos(n pi x / W); the y-solve uses the mode Green's function
+    G = cosh(l*y_min) sinh(l*(H-y_max)) / (l cosh lH), integrated in
+    closed form over the source band. Mode 0 reproduces the exact
+    mean profile. Note the caveat: the real aluminium bar is nearly
+    isothermal; with uniform k the series overshoots INSIDE the bar,
+    so field comparisons mask the bar footprint and the bar estimate
+    is the series average over it."""
+    x = np.asarray(x); y = np.asarray(y)
+    x0, x1 = xc - a / 2, xc + a / 2
+    y0, y1 = gap, gap + a
+    X, Y = np.meshgrid(x, y)
+    c0 = q_v * a / W
+    I = np.where(Y >= y1, a * (H - Y),
+        np.where(Y >= y0,
+                 (a ** 2 - (Y - y0) ** 2) / 2 + a * (H - y1),
+                 a ** 2 / 2 + a * (H - y1)))
+    T = T_top + (c0 / k) * I
+    nmax = min(nmax, max(int(300.0 * W / (math.pi * H)), 8))
+    for n in range(1, nmax + 1):
+        lam = n * math.pi / W
+        cn = 2 * q_v * (math.sin(lam * x1) - math.sin(lam * x0)) / (
+            W * lam)
+        if abs(cn) < 1e-30:
+            continue
+        chH = math.cosh(lam * H)
+        pref = cn / (k * lam ** 2 * chH)
+        fb = np.cosh(lam * Y) * (math.cosh(lam * (H - y0)) -
+                                 math.cosh(lam * (H - y1)))
+        fa = np.sinh(lam * (H - Y)) * (math.sinh(lam * y1) -
+                                       math.sinh(lam * y0))
+        fm = (np.sinh(lam * (H - Y)) *
+              (np.sinh(lam * Y) - math.sinh(lam * y0)) +
+              np.cosh(lam * Y) *
+              (np.cosh(lam * (H - Y)) - math.cosh(lam * (H - y1))))
+        f = np.where(Y <= y0, fb, np.where(Y >= y1, fa, fm)) * pref
+        T = T + f * np.cos(lam * X)
+    return T
+
+
+def wp3_exact_mean(y, W, H, a, gap, q_v, k, T_top):
+    """EXACT horizontal-plane mean temperature (energy integral, no
+    approximation): flat below the bar, quadratic across the band,
+    linear with slope Q'/(kW) above it, T_top at the lid."""
+    y = np.asarray(y)
+    c0 = q_v * a / W
+    y0, y1 = gap, gap + a
+    I = np.where(y >= y1, a * (H - y),
+        np.where(y >= y0,
+                 (a ** 2 - (y - y0) ** 2) / 2 + a * (H - y1),
+                 a ** 2 / 2 + a * (H - y1)))
+    return T_top + (c0 / k) * I
+
+
+def wp3_check_field(x, y, T, W, H, a, xc, gap, q_v, k, T_top):
+    """Judge an uploaded field: rigorous integral anchors first, then
+    agreement with the analytical series outside the bar."""
+    order = np.argsort(y)
+    y = np.asarray(y)[order]; T = np.asarray(T)[order, :]
+    xo = np.argsort(x); x = np.asarray(x)[xo]; T = T[:, xo]
+    rm = np.nanmean(T, axis=1)
+    y0, y1 = gap, gap + a
+    m = dict()
+    m["top_dev"] = float(abs(rm[-1] - T_top))
+    below = y < y0 - 0.02 * H
+    m["below_flat"] = float(rm[below].max() - rm[below].min()) \
+        if below.sum() > 2 else 0.0
+    above = y > y1 + 0.05 * H
+    slope_exact = -q_v * a * a / (k * W)
+    if above.sum() > 3:
+        A_ = np.vstack([y[above], np.ones(above.sum())]).T
+        sl = float(np.linalg.lstsq(A_, rm[above], rcond=None)[0][0])
+        m["slope_rel"] = float(abs(sl - slope_exact) /
+                               abs(slope_exact))
+    else:
+        m["slope_rel"] = 0.0
+    Ts = wp3_series_field(x, y, W, H, a, xc, gap, q_v, k, T_top)
+    X, Y = np.meshgrid(x, y)
+    bar = ((X > xc - a / 2 - 0.02 * W) & (X < xc + a / 2 + 0.02 * W)
+           & (Y > y0 - 0.02 * H) & (Y < y1 + 0.02 * H))
+    d = (T - Ts)[~bar & ~np.isnan(T)]
+    m["rms_out"] = float(np.sqrt(np.mean(d ** 2)))
+    m["max_out"] = float(np.max(np.abs(d)))
+    m["T_peak"] = float(np.nanmax(T))
+    inbar = ((X >= xc - a / 2) & (X <= xc + a / 2) & (Y >= y0)
+             & (Y <= y1))
+    m["T_bar_series"] = float(np.mean(Ts[inbar])) if inbar.any() \
+        else float("nan")
+    m["anchors_ok"] = (m["top_dev"] < 0.05 and
+                       m["below_flat"] < 0.08 and
+                       m["slope_rel"] < 0.05)
+    m["Ts"] = Ts; m["mean_num"] = rm
+    m["mean_exact"] = wp3_exact_mean(y, W, H, a, gap, q_v, k, T_top)
+    m["x"] = x; m["y"] = y; m["T"] = T
+    return m
+
+
 def fea_p_basic(fl, W, H, a, x_off, gap, L_z, Q, k_b, rho_b,
                 cp_b, T0, t_end, t_step, h_ext, T_amb):
     """Operating point + the exact adiabatic slope for the basic
@@ -2681,6 +2830,132 @@ def fea_tab(d, g, fl, cool_df, loop):
         "writes the results table (deviation column included) and "
         "saves the .mph. FEMM's steady solver can twin the "
         "fixed-top case as the next cross-check rung if wanted.")
+
+    st.markdown("---")
+    st.markdown("##### Check a COMSOL run against the analytics")
+    st.markdown(
+        "The solved export writes the full 2D temperature field to "
+        f"`{P['cls']}_field.txt` automatically. Drop that file here "
+        "(the `_results.txt` table too, if you like) and the app "
+        "judges the run: first the **rigorous anchors** - the top "
+        "row must equal $T_{top}$, the plane-mean temperature must "
+        "be flat below the bar and exactly linear above it with "
+        "slope $Q'/(kW)$ (pure energy conservation, no "
+        "approximation) - then agreement with the **analytical "
+        "series solution** of the same Poisson problem, compared "
+        "outside the bar footprint. Checked against the case as "
+        "currently configured above, so set the sliders (or press "
+        "the WP3 preset) to match the run.")
+    ups = st.file_uploader(
+        "Upload the exported file(s)", type=["txt", "dat", "csv"],
+        accept_multiple_files=True, key="fx_up")
+    for up in ups or []:
+        try:
+            txt = up.read().decode("utf-8", errors="replace")
+        except Exception as e:
+            st.error(f"{up.name}: could not read ({e})")
+            continue
+        if "DEVIATION" in txt or "bar peak" in txt.lower():
+            st.markdown(f"**{up.name}** (evaluation table):")
+            st.code("\n".join(txt.splitlines()[:14]),
+                    language=None)
+            continue
+        try:
+            fx_, fy_, fT_ = parse_comsol_field(txt)
+        except Exception as e:
+            st.error(f"{up.name}: {e}")
+            continue
+        k_eff = km * P["k_oil"]
+        xc_ = Wt / 2 + xoff
+        if (abs(fx_.max() - fx_.min() - Wt) > 0.01 * Wt or
+                abs(fy_.max() - fy_.min() - Ht) > 0.01 * Ht):
+            st.warning(
+                f"{up.name}: field extents "
+                f"{(fx_.max()-fx_.min())*1000:.1f} x "
+                f"{(fy_.max()-fy_.min())*1000:.1f} mm do not match "
+                f"the tank set above ({Wt*1000:.0f} x "
+                f"{Ht*1000:.0f} mm) - fix the sliders or the "
+                "upload before trusting the verdict.")
+        m = wp3_check_field(fx_, fy_, fT_, Wt, Ht, a, xc_, gap,
+                            Q / (a * a * Lz), k_eff, Ttop)
+        if m["anchors_ok"]:
+            st.success(
+                f"{up.name}: energy anchors PASS - top row within "
+                f"{m['top_dev']:.3f} °C of T_top, sub-bar mean flat "
+                f"to {m['below_flat']:.3f} °C, above-bar mean slope "
+                f"within {100*m['slope_rel']:.1f}% of the exact "
+                f"Q'/(kW). The solve is internally consistent.")
+        else:
+            st.error(
+                f"{up.name}: energy anchors FAIL (top "
+                f"{m['top_dev']:.2f} °C, flat {m['below_flat']:.2f} "
+                f"°C, slope {100*m['slope_rel']:.0f}%) - wrong "
+                "parameters, wrong boundary condition, or an "
+                "unconverged solve. Do not compare further; fix "
+                "this first.")
+        g1, g2, g3, g4 = st.columns(4)
+        g1.metric("Bar peak (numerical)", f"{m['T_peak']:.2f} °C")
+        g2.metric("Series bar estimate",
+                  f"{m['T_bar_series']:.2f} °C")
+        g3.metric("Field RMS vs series (outside bar)",
+                  f"{m['rms_out']:.3f} °C")
+        g4.metric("Worst point (outside bar)",
+                  f"{m['max_out']:.3f} °C")
+        wp3_like = (abs(Wt - 0.025) < 1e-4 and
+                    abs(Ht - 0.030) < 1e-4 and
+                    abs(a - 0.005) < 1e-4 and
+                    abs(Q - 0.75) < 0.02)
+        if wp3_like and abs(km - 1.0) < 1e-6:
+            nu = (m["T_peak"] - Ttop) / 0.72
+            st.markdown(
+                f"**Against Fluent (WP3):** conduction-only peak "
+                f"rise {m['T_peak']-Ttop:.2f} °C vs Fluent's 0.72 "
+                f"°C - the buoyant circulation is worth a factor "
+                f"of **{nu:.1f}** here. Raise the k-multiplier to "
+                f"about {nu:.1f} and re-export to emulate it.")
+        zmin = float(min(np.nanmin(m["T"]), np.nanmin(m["Ts"])))
+        zmax = float(max(np.nanmax(m["T"]), np.nanmax(m["Ts"])))
+        h1, h2, h3 = st.columns(3)
+        for col, Z, ttl in ((h1, m["T"], "Numerical (COMSOL)"),
+                            (h2, m["Ts"], "Analytical (series)"),
+                            (h3, m["T"] - m["Ts"],
+                             "Difference [°C]")):
+            fg = go.Figure(go.Heatmap(
+                x=m["x"] * 1000, y=m["y"] * 1000, z=Z,
+                colorscale="Turbo" if ttl[0] != "D" else "RdBu",
+                zmin=None if ttl[0] == "D" else zmin,
+                zmax=None if ttl[0] == "D" else zmax,
+                colorbar=dict(thickness=10)))
+            fg.update_layout(height=300, title=dict(text=ttl,
+                             font=dict(size=12), x=0.02),
+                             margin=dict(l=6, r=6, t=28, b=6),
+                             yaxis=dict(scaleanchor="x"))
+            col.plotly_chart(fg, width='stretch',
+                             key=f"fx_hm_{up.name}_{ttl[:4]}")
+        fp = go.Figure()
+        fp.add_scatter(x=m["mean_num"], y=m["y"] * 1000,
+                       mode="markers", name="numerical row mean",
+                       marker=dict(size=5, color="#F59E0B"))
+        fp.add_scatter(x=m["mean_exact"], y=m["y"] * 1000,
+                       mode="lines", name="exact energy integral",
+                       line=dict(color="#38BDF8", width=2.5))
+        fp.update_layout(height=320, xaxis_title="plane-mean T [°C]",
+                         yaxis_title="height y [mm]",
+                         margin=dict(l=8, r=8, t=26, b=8),
+                         legend=dict(orientation="h", y=1.05),
+                         title=dict(text="The rigorous anchor: mean "
+                                    "profile, numerical vs exact",
+                                    font=dict(size=12), x=0.02))
+        st.plotly_chart(fp, width='stretch',
+                        key=f"fx_prof_{up.name}")
+        st.caption(
+            "Caveat stated once and honestly: the series assumes "
+            "uniform liquid conductivity, so INSIDE the aluminium "
+            "bar it overshoots (the real bar is nearly isothermal); "
+            "that is why the field comparison masks the bar "
+            "footprint and the bar estimate above is the series "
+            "average over it. The mean-profile anchor carries no "
+            "such caveat - it is exact.")
 
 
 def system_tab(d, g, fl, res, masses, loop, chil, Q_duty, C_steady):
@@ -3586,6 +3861,31 @@ def smoke():
         "TemperatureBoundary" not in _j2
     print(f"fea basic (WP3): q_v {_qv:.0f} W/m3, sealed slope "
           f"{_pb['dTdt_pred']*60:.4f} K/min, both variants OK")
+    # ---- WP3 analytics roundtrip: series -> file -> parse -> check
+    _x = np.linspace(0, 0.025, 61); _y = np.linspace(0, 0.030, 73)
+    _T = wp3_series_field(_x, _y, 0.025, 0.030, 0.005, 0.0125,
+                          0.010, 1e5, 0.6, 25.0)
+    _dy = _y[-1] - _y[-2]
+    _Qp = np.trapezoid(-0.6 * (_T[-1, :] - _T[-2, :]) / _dy, _x)
+    assert abs(_Qp - 2.5) < 0.12, "series must conserve energy"
+    _rows = "\n".join(f"{xv:.9e} {yv:.9e} {_T[j, i]:.9e}"
+                       for j, yv in enumerate(_y)
+                       for i, xv in enumerate(_x))
+    _xu, _yu, _Tp = parse_comsol_field("% x y T\n" + _rows)
+    assert _Tp.shape == _T.shape and \
+        np.nanmax(np.abs(_Tp - _T)) < 1e-6
+    _m = wp3_check_field(_xu, _yu, _Tp, 0.025, 0.030, 0.005,
+                         0.0125, 0.010, 1e5, 0.6, 25.0)
+    assert _m["anchors_ok"] and _m["rms_out"] < 1e-6
+    _X, _Y = np.meshgrid(_xu, _yu)
+    _mb = wp3_check_field(_xu, _yu, _Tp + 0.3 * np.exp(
+        -((_X - 0.02) ** 2 + (_Y - 0.02) ** 2) / 1e-5),
+        0.025, 0.030, 0.005, 0.0125, 0.010, 1e5, 0.6, 25.0)
+    assert _mb["rms_out"] > 0.03, "checker must flag a bad field"
+    print(f"wp3 analytics: series peak {_T.max():.2f} degC, "
+          f"top-flux {_Qp:.3f} W/m, roundtrip rms "
+          f"{_m['rms_out']:.1e}, perturbation flagged "
+          f"{_mb['rms_out']:.2f} K")
     print(f"cases: still {c1['T_s']:.1f} °C (h {c1['h']:.0f}) | "
           f"axial h {ca['h']:.0f} < cross h {cc['h']:.0f} | "
           f"bath ss {wm['T_ss']:.0f} °C tau {wm['tau_min']:.0f} min | "

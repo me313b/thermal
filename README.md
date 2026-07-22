@@ -587,6 +587,15 @@ thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
 
+## v10.13
+
+Close the loop: COMSOL exports the whole 2D field automatically; the app judges the run and plots numerical vs analytical.
+
+- Every SOLVED export now writes <cls>_field.txt during the batch run with no user action: the full temperature field on a 61 x 73 regular grid (Data export, degC), alongside the existing <cls>_results.txt table. Build-only exports create both export nodes ready to right-click after Compute.
+- New "Check a COMSOL run" section at the foot of the FEA tab: upload the field file (and optionally the results table). The app first applies the RIGOROUS anchors - top row equal to T_top, plane-mean temperature flat below the bar and exactly linear above it with slope Q'/(kW); these are energy integrals with no approximation, so failing them means wrong parameters, wrong BC, or an unconverged solve. It then compares the field against a genuine ANALYTICAL solution: an eigenfunction series (cosine modes in x, closed-form mode Green's function in y) of the same Poisson problem, verified in smoke to conserve energy to 0.1% and to round-trip through the COMSOL file format at 3.5e-8 K RMS, with a perturbation test proving the checker flags bad fields. Output: pass/fail banner, bar peak vs series bar estimate, outside-bar RMS and worst point, three heatmaps (numerical, analytical, difference), and the mean-profile anchor plot. Caveat stated in the UI: the series assumes uniform liquid k, so the bar interior is masked and the bar estimate is the series average over its footprint.
+- When the run matches the WP3 preset at k-multiplier 1, the app converts the conduction-only peak rise against Fluent's 0.72 degC into the implied convective enhancement and recommends the k-multiplier to re-export with.
+- First real-run reading (user's surface plot): bar ~28 degC over the 25 degC sink -> ~3.0 K conduction-only vs Fluent 0.72 K -> circulation worth a factor ~4.2, exactly the quantity the app's correlations exist to predict.
+
 ## v10.12
 
 First real COMSOL 6.4 compile, first real fix. The user's compile log showed the genuine API rejecting the generated file: Model.save(String) throws IOException, and the generated run()/main() did not declare it - my javac validation stub was too permissive to catch that. (The log's rendering of the save argument with spaces was cosmetic; the checksum-verified file on disk has underscores.) Fixes: every generated file now imports java.io.IOException and declares throws IOException on run() and main(); the validation stub's save() now carries the real signature, and a negative test confirms a file without the throws clause fails the stub compile. Samples regenerated.

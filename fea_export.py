@@ -319,16 +319,35 @@ __PG2__
   }
 }
 """
-    execs = ("    // (evaluation and table export happen after "
-             "you press Compute)\n" if build_only else
-             '\n'.join([
-              '    model.result().numerical("gev1").setResult();',
-              '    model.result().export().create("texp1", "Table");',
-              '    model.result().export("texp1").set("table",'
-              ' "tbl1");',
-              '    model.result().export("texp1").set("filename",',
-              '        "{cls}_results.txt");',
-              '    model.result().export("texp1").run();']) + '\n')
+    _create = '\n'.join([
+        '    model.result().export().create("texp1", "Table");',
+        '    model.result().export("texp1").set("table", "tbl1");',
+        '    model.result().export("texp1").set("filename",',
+        '        "{cls}_results.txt");',
+        '    // full 2D temperature field on a regular grid - this is',
+        '    // the file the app\'s "Check a COMSOL run" box reads',
+        '    model.result().export().create("data1", "Data");',
+        '    model.result().export("data1").set("expr",'
+        ' new String[]{"T"});',
+        '    model.result().export("data1").set("unit",'
+        ' new String[]{"degC"});',
+        '    model.result().export("data1").set("location",'
+        ' "regulargrid");',
+        '    model.result().export("data1").set("regulargridx2",'
+        ' 61);',
+        '    model.result().export("data1").set("regulargridy2",'
+        ' 73);',
+        '    model.result().export("data1").set("filename",',
+        '        "{cls}_field.txt");']) + '\n'
+    _run = '\n'.join([
+        '    model.result().numerical("gev1").setResult();',
+        '    model.result().export("texp1").run();',
+        '    model.result().export("data1").run();']) + '\n'
+    execs = (_create +
+             ("    // (after you press Compute: Evaluate All fills "
+              "the table; right-click\n"
+              "    // each Export node > Export to write the txt "
+              "files)\n" if build_only else _run))
     s = (s.replace("__EXEC__", execs)
          .replace("__TOPBC__", topbc)
          .replace("__STUDY__", study)
