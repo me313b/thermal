@@ -43,7 +43,10 @@ def comsol_basic_2d(P):
     T_top, k_mult, steady (bool), cls (class/file name)."""
     cls = P.get("cls", "ipl2d")
     top_fixed = bool(P.get("top_fixed", True))
-    steady = bool(P.get("steady", top_fixed))
+    fan = P.get("flow_mode", "") == "fan"
+    if fan:
+        top_fixed = False
+    steady = bool(P.get("steady", top_fixed or fan))
     build_only = bool(P.get("build_only", False))
     s = f"""/*
  * BASIC MODULE - a heat bar in a liquid tank (plane 2D), matched to
@@ -118,7 +121,19 @@ public class {cls} {{
          "top-face temperature (the report's sink)"),
         ("k_mult", f"{P.get('k_mult', 1.0)}",
          "liquid effective-k multiplier; 1 = pure conduction, the "
-         "Fluent-matching value = Nu of the buoyant circulation"),
+         "CFD-matching value = Nu of the buoyant circulation"),
+        ("u_fan", f"{P.get('u_fan', 0.0005)}[m/s]",
+         "fan mode: prescribed upward oil speed"),
+        ("T_in", f"{P.get('T_in', 25.0)}[degC]",
+         "fan mode: inlet oil temperature at the floor"),
+        ("P_adv", "rho_oil*cp_oil*u_fan/(k_mult*k_oil)",
+         "fan mode: advection parameter [1/m]"),
+        ("m_slope", "q_v*a_cell/W_tank/(rho_oil*cp_oil*u_fan)",
+         "fan mode: mean-profile slope in the bar band"),
+        ("Tout_pred",
+         "T_in + m_slope*a_cell + (m_slope/P_adv)*"
+         "(exp(-P_adv*(gap_bot+a_cell)) - exp(-P_adv*gap_bot))",
+         "fan mode: EXACT outlet mean temperature (the anchor)"),
         ("A_cell", "a_cell^2", "battery cross-section"),
         ("A_oil", "W_tank*H_tank - a_cell^2", "liquid cross-section"),
         ("dTdt_pred",
@@ -136,8 +151,48 @@ public class {cls} {{
              "    model.component(\"comp1\").physics(\"ht\")"
              ".feature(\"temp1\").set(\"T0\", \"T_top\");\n"
              if top_fixed else
+             "    // no fixed-temperature lid in this configuration\n"
+             if fan else
              "    // sealed: no boundary features - COMSOL's default"
              " is thermal insulation everywhere\n")
+    fanblk = ""
+    if fan:
+        fanblk = (
+            "    // FAN MODE: the liquid advects upward at u_fan.\n"
+            "    // Prescribed velocity on the Fluid feature; if "
+            "your COMSOL version\n"
+            "    // stores the velocity as a model input instead, "
+            "swap the marked line\n"
+            "    // for the commented alternative below it.\n"
+            '    model.component("comp1").physics("ht")'
+            '.create("fld1",\n'
+            '        "FluidHeatTransferModel", 2);\n'
+            '    model.component("comp1").physics("ht")'
+            '.feature("fld1")\n'
+            '        .selection().named("geom1_selOil");\n'
+            '    model.component("comp1").physics("ht")'
+            '.feature("fld1")\n'
+            '        .set("u", new String[]{"0", "u_fan"});'
+            '   // primary API\n'
+            '    // model.component("comp1").physics("ht")'
+            '.feature("fld1")\n'
+            '    //     .set("minput_velocity", '
+            'new String[]{"0", "u_fan"});\n'
+            '    model.component("comp1").physics("ht")'
+            '.create("tin1",\n'
+            '        "TemperatureBoundary", 1);\n'
+            '    model.component("comp1").physics("ht")'
+            '.feature("tin1")\n'
+            '        .selection().named("geom1_selBot");\n'
+            '    model.component("comp1").physics("ht")'
+            '.feature("tin1")\n'
+            '        .set("T0", "T_in");\n'
+            '    model.component("comp1").physics("ht")'
+            '.create("out1",\n'
+            '        "Outflow", 1);\n'
+            '    model.component("comp1").physics("ht")'
+            '.feature("out1")\n'
+            '        .selection().named("geom1_selTop");\n')
     _run = ("" if build_only else
             "    model.study(\"std1\").run();\n")
     if steady:
@@ -157,7 +212,26 @@ public class {cls} {{
                   "    // then Results > Derived Values > Evaluate "
                   "All fills the table, and the\n"
                   "    // plot groups render.\n")
-    if top_fixed:
+    if fan:
+        evals = """    model.result().numerical().create("gev1", "EvalGlobal");
+    model.result().numerical("gev1").set("expr", new String[]{
+        "aveTop(T)",
+        "Tout_pred",
+        "aveTop(T) - Tout_pred",
+        "maxB(T)",
+        "rho_oil*cp_oil*u_fan*W_tank*(aveTop(T) - T_in)",
+        "Q_cell/L_z"});
+    model.result().numerical("gev1").set("unit", new String[]{
+        "degC", "degC", "K", "degC", "W/m", "W/m"});
+    model.result().numerical("gev1").set("descr", new String[]{
+        "FEA outlet mean T",
+        "EXACT outlet mean (closed form)",
+        "DEVIATION - must be ~0",
+        "bar peak T",
+        "advected out of the top, per metre",
+        "bar heat per metre (advected + inlet leak = this)"});
+"""
+    elif top_fixed:
         evals = """    model.result().numerical().create("gev1", "EvalGlobal");
     model.result().numerical("gev1").set("expr", new String[]{
         "maxB(T)",
@@ -247,6 +321,22 @@ public class {cls} {{
         .set("ymax", "H_tank + 1e-6");
     model.component("comp1").geom("geom1").feature("selTop")
         .set("condition", "inside");
+    model.component("comp1").geom("geom1").create("selBot",
+        "BoxSelection");
+    model.component("comp1").geom("geom1").feature("selBot")
+        .set("entitydim", 1);
+    model.component("comp1").geom("geom1").feature("selBot")
+        .set("ymin", "-1e-6");
+    model.component("comp1").geom("geom1").feature("selBot")
+        .set("ymax", "1e-6");
+    model.component("comp1").geom("geom1").feature("selBot")
+        .set("condition", "inside");
+    model.component("comp1").geom("geom1").create("selOil",
+        "ComplementSelection");
+    model.component("comp1").geom("geom1").feature("selOil")
+        .set("entitydim", 2);
+    model.component("comp1").geom("geom1").feature("selOil")
+        .set("input", new String[]{"selCell"});
     model.component("comp1").geom("geom1").run();
 
     // liquid everywhere, battery material overriding its own domain
@@ -276,7 +366,7 @@ public class {cls} {{
         .named("geom1_selCell");
     model.component("comp1").physics("ht").feature("hs1")
         .set("Q0", "q_v");
-__TOPBC__    model.component("comp1").physics("ht").feature("init1")
+__TOPBC____FAN__    model.component("comp1").physics("ht").feature("init1")
         .set("Tinit", "T0_C");
 
     // operators for the checks
@@ -292,6 +382,11 @@ __TOPBC__    model.component("comp1").physics("ht").feature("init1")
     model.component("comp1").cpl("intTop").selection()
         .geom("geom1", 1);
     model.component("comp1").cpl("intTop").selection()
+        .named("geom1_selTop");
+    model.component("comp1").cpl().create("aveTop", "Average");
+    model.component("comp1").cpl("aveTop").selection()
+        .geom("geom1", 1);
+    model.component("comp1").cpl("aveTop").selection()
         .named("geom1_selTop");
 
     model.component("comp1").mesh().create("mesh1");
@@ -350,6 +445,7 @@ __PG2__
               "files)\n" if build_only else _run))
     s = (s.replace("__EXEC__", execs)
          .replace("__TOPBC__", topbc)
+         .replace("__FAN__", fanblk)
          .replace("__STUDY__", study)
          .replace("__EVALS__", evals)
          .replace("__PG2__", pg2)
@@ -368,7 +464,10 @@ def comsol_basic_3d(P):
     Same P keys as comsol_basic_2d."""
     cls = P.get("cls", "ipl3d")
     top_fixed = bool(P.get("top_fixed", True))
-    steady = bool(P.get("steady", top_fixed))
+    fan = P.get("flow_mode", "") == "fan"
+    if fan:
+        top_fixed = False
+    steady = bool(P.get("steady", top_fixed or fan))
     build_only = bool(P.get("build_only", False))
     qv = P["Q_cell"] / (P["a_cell"] ** 2 * P["L_z"])
     s = f"""/*
@@ -378,7 +477,7 @@ def comsol_basic_3d(P):
  * Tank {P['W_tank']*1000:.0f} x {P['L_z']*1000:.0f} x {P['H_tank']*1000:.0f} mm (W x depth x H);
  * bar {P['a_cell']*1000:.1f} mm square x full depth, {P['gap_bot']*1000:.0f} mm
  * off the floor; q_v = {qv:.3g} W/m3 ({P['Q_cell']:.3f} W total).
- * BCs: ends, sides and bottom adiabatic; top FACE {'fixed at T_top - steady state exists' if top_fixed else 'adiabatic (sealed) - transient only'}.
+ * BCs: {'FAN MODE - floor is the inlet at T_in, lid is the outflow, oil advects upward at u_fan; the exact outlet mean Tout_pred is tabulated with its deviation' if fan else "ends, sides and bottom adiabatic; top FACE " + ('fixed at T_top - steady state exists' if top_fixed else 'adiabatic (sealed) - transient only')}.
  *
  * PHYSICS NOTE: geometry and BCs are z-invariant, so the exact
  * solution is the 2D field at every depth. The app checks three
@@ -421,7 +520,19 @@ public class {cls} {{
         ("t_step", f"{P['t_step']}[s]", "output interval"),
         ("T_top", f"{P.get('T_top', 25.0)}[degC]", "top-face sink"),
         ("k_mult", f"{P.get('k_mult', 1.0)}",
-         "liquid effective-k multiplier (Fluent-matching value = Nu)"),
+         "liquid effective-k multiplier (CFD-matching value = Nu)"),
+        ("u_fan", f"{P.get('u_fan', 0.0005)}[m/s]",
+         "fan mode: prescribed upward oil speed"),
+        ("T_in", f"{P.get('T_in', 25.0)}[degC]",
+         "fan mode: inlet oil temperature at the floor"),
+        ("P_adv", "rho_oil*cp_oil*u_fan/(k_mult*k_oil)",
+         "fan mode: advection parameter [1/m]"),
+        ("m_slope", "q_v*a_cell/W_tank/(rho_oil*cp_oil*u_fan)",
+         "fan mode: mean-profile slope in the bar band"),
+        ("Tout_pred",
+         "T_in + m_slope*a_cell + (m_slope/P_adv)*"
+         "(exp(-P_adv*(gap_bot+a_cell)) - exp(-P_adv*gap_bot))",
+         "fan mode: EXACT outlet mean temperature (the anchor)"),
         ("dTdt_pred",
          "Q_cell/(rho_bat*cp_bat*a_cell^2*L_z + "
          "rho_oil*cp_oil*(W_tank*H_tank - a_cell^2)*L_z)",
@@ -465,6 +576,22 @@ public class {cls} {{
         .set("zmax", "H_tank + 1e-6");
     model.component("comp1").geom("geom1").feature("selTop")
         .set("condition", "inside");
+    model.component("comp1").geom("geom1").create("selBot",
+        "BoxSelection");
+    model.component("comp1").geom("geom1").feature("selBot")
+        .set("entitydim", 2);
+    model.component("comp1").geom("geom1").feature("selBot")
+        .set("zmin", "-1e-6");
+    model.component("comp1").geom("geom1").feature("selBot")
+        .set("zmax", "1e-6");
+    model.component("comp1").geom("geom1").feature("selBot")
+        .set("condition", "inside");
+    model.component("comp1").geom("geom1").create("selOil",
+        "ComplementSelection");
+    model.component("comp1").geom("geom1").feature("selOil")
+        .set("entitydim", 3);
+    model.component("comp1").geom("geom1").feature("selOil")
+        .set("input", new String[]{"selCell"});
     model.component("comp1").geom("geom1").run();
 
     model.component("comp1").material().create("matOil", "Common");
@@ -494,6 +621,29 @@ public class {cls} {{
     model.component("comp1").physics("ht").feature("hs1")
         .set("Q0", "q_v");
 """
+    if fan:
+        s += """    // FAN MODE: liquid advects upward at u_fan; inlet floor at
+    // T_in; outflow lid. Velocity on the Fluid feature - commented
+    // fallback below if your version uses the model-input form.
+    model.component("comp1").physics("ht").create("fld1",
+        "FluidHeatTransferModel", 3);
+    model.component("comp1").physics("ht").feature("fld1")
+        .selection().named("geom1_selOil");
+    model.component("comp1").physics("ht").feature("fld1")
+        .set("u", new String[]{"0", "0", "u_fan"});   // primary API
+    // model.component("comp1").physics("ht").feature("fld1")
+    //     .set("minput_velocity", new String[]{"0","0","u_fan"});
+    model.component("comp1").physics("ht").create("tin1",
+        "TemperatureBoundary", 2);
+    model.component("comp1").physics("ht").feature("tin1")
+        .selection().named("geom1_selBot");
+    model.component("comp1").physics("ht").feature("tin1")
+        .set("T0", "T_in");
+    model.component("comp1").physics("ht").create("out1",
+        "Outflow", 2);
+    model.component("comp1").physics("ht").feature("out1")
+        .selection().named("geom1_selTop");
+"""
     if top_fixed:
         s += """    model.component("comp1").physics("ht").create("temp1",
         "TemperatureBoundary", 2);
@@ -518,6 +668,11 @@ public class {cls} {{
         .geom("geom1", 2);
     model.component("comp1").cpl("intTop").selection()
         .named("geom1_selTop");
+    model.component("comp1").cpl().create("aveTop", "Average");
+    model.component("comp1").cpl("aveTop").selection()
+        .geom("geom1", 2);
+    model.component("comp1").cpl("aveTop").selection()
+        .named("geom1_selTop");
 
     model.component("comp1").mesh().create("mesh1");
     model.component("comp1").mesh("mesh1").autoMeshSize(4);
@@ -539,7 +694,18 @@ public class {cls} {{
         s += ('    // BUILD-ONLY: open the .mph, press Compute (F8);'
               ' then Evaluate All\n    // and right-click each'
               ' Export node > Export.\n')
-    if top_fixed:
+    if fan:
+        evals = ('"aveTop(T)", "Tout_pred", '
+                 '"aveTop(T) - Tout_pred", "maxB(T)", '
+                 '"rho_oil*cp_oil*u_fan*W_tank*L_z*'
+                 '(aveTop(T) - T_in)", "Q_cell"')
+        units = '"degC", "degC", "K", "degC", "W", "W"'
+        descs = ('"FEA outlet mean T", '
+                 '"EXACT outlet mean (closed form)", '
+                 '"DEVIATION - must be ~0", "bar peak T", '
+                 '"advected out of the top, total", '
+                 '"bar heat (advected + inlet leak = this)"')
+    elif top_fixed:
         evals = ('"maxB(T)", "aveB(T)", "aveAll(T)", '
                  '"intTop(ht.ntflux)", "Q_cell", '
                  '"intTop(ht.ntflux) - Q_cell"')

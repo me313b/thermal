@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.17"
+APP_VERSION = "v10.21"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -2319,6 +2319,68 @@ def wp3_check_field(x, y, T, W, H, a, xc, gap, q_v, k, T_top):
     return m
 
 
+
+def fan_mean_exact(y, W, H, a, gap, q_v, k, rho, cp, u, T_in):
+    """EXACT plane-mean profile for the fan rung: upward speed u,
+    inlet Dirichlet T_in at the floor, outflow at the lid, sides
+    adiabatic. Integrating the 2D equation over x gives the 1D ODE
+    k Tbar'' - rho cp u Tbar' = -qbar(y) with qbar = q_v a/W on the
+    bar band; solved piecewise in closed form. Exponentials are
+    clipped to non-positive arguments so any Peclet number is safe.
+    Returns (Tbar(y), info) with the exact energy split: heat
+    advected out of the top plus the conductive leak back through
+    the inlet equals Q' identically."""
+    y = np.asarray(y, float)
+    y0, y1 = gap, gap + a
+    P = rho * cp * u / k
+    qbar = q_v * a / W
+    m = qbar / (rho * cp * u)
+    e0 = math.exp(-P * y0)
+    e1 = math.exp(-P * y1)
+    A3 = m * a + (m / P) * (e1 - e0)
+    ex = lambda arg: np.exp(np.minimum(arg, 0.0))
+    th_lo = (m / P) * ((ex(P * (y - y0)) - ex(P * (y - y1)))
+                       - (e0 - e1))
+    th_md = (((m / P) * (1 - e0 + e1) - m * y0)
+             - (m / P) * ex(P * (y - y1)) + m * y)
+    th = np.where(y <= y0, th_lo, np.where(y >= y1, A3, th_md))
+    return T_in + th, dict(
+        T_out=T_in + A3, A3=A3, Pe=P * H,
+        adv_W_per_m=rho * cp * u * W * A3,
+        cond_bottom_W_per_m=k * W * m * (e0 - e1))
+
+
+def fan_check_field(x, y, T, W, H, a, xc, gap, q_v, k, rho, cp, u,
+                    T_in):
+    """Judge a fan-rung field: inlet row at T_in, plane-mean profile
+    against the exact closed form, outlet mean against the exact
+    T_out, and the data-side advected power against the exact split.
+    The full-2D wake comparison is a later rung; the mean profile is
+    exact and carries the verdict."""
+    order = np.argsort(y)
+    y = np.asarray(y)[order]; T = np.asarray(T)[order, :]
+    xo = np.argsort(x); x = np.asarray(x)[xo]; T = T[:, xo]
+    rm = np.nanmean(T, axis=1)
+    ex, info = fan_mean_exact(y, W, H, a, gap, q_v, k, rho, cp, u,
+                              T_in)
+    m = dict(info)
+    m["inlet_dev"] = float(abs(rm[0] - T_in))
+    m["outlet_dev"] = float(abs(rm[-1] - info["T_out"]))
+    m["rms_mean"] = float(np.sqrt(np.nanmean((rm - ex) ** 2)))
+    m["max_mean"] = float(np.nanmax(np.abs(rm - ex)))
+    m["adv_data"] = float(rho * cp * u * W * (rm[-1] - T_in))
+    m["adv_ratio"] = m["adv_data"] / max(info["adv_W_per_m"], 1e-30)
+    tol = max(0.03, 0.15 * abs(info["A3"]))
+    m["anchors_ok"] = (m["inlet_dev"] < 0.03 and
+                       m["outlet_dev"] < tol and
+                       m["rms_mean"] < max(0.05, tol))
+    m["T_peak"] = float(np.nanmax(T))
+    m["rms_out"] = m["rms_mean"]; m["max_out"] = m["max_mean"]
+    m["mean_num"] = rm; m["mean_exact"] = ex
+    m["x"] = x; m["y"] = y; m["T"] = T
+    return m
+
+
 def fea_p_basic(fl, W, H, a, x_off, gap, L_z, Q, k_b, rho_b,
                 cp_b, T0, t_end, t_step, h_ext, T_amb):
     """Operating point + the exact adiabatic slope for the basic
@@ -2664,6 +2726,227 @@ def cases_tab(d, g, fl, res, cool_df, loop):
 
 
 
+
+
+def battery_tab():
+    import battery_hppc as BH
+    import battery_card as BC
+    st.markdown("#### Battery model from measurements")
+    st.markdown(
+        "Three ways in, clearly ranked. **(1) Raw test data**: a "
+        "zip of BioLogic condition folders (like the JP50 set - "
+        ".mpr streams or Split-file Excel exports) or a plain "
+        "time/current/voltage CSV; the app extracts OCV(SOC), "
+        "R0(SOC) and the RC branch per condition, proves each fit "
+        "by re-simulating the whole measured stream, and builds a "
+        "**battery model card**. **(2) A card** exported earlier: "
+        "one CSV that carries the whole model - upload it and "
+        "everything battery-aware uses it, no raw data needed; "
+        "the same file loads straight into COMSOL (its '%' header "
+        "lines are COMSOL-native comments) and the analytical "
+        "layer. **(3) Nothing**: a simplified default is used and "
+        "said so - constant 20 mΩ + 10 mΩ, linear 3.0-4.2 V OCV.")
+    ccap, cord, cprr = st.columns(3)
+    cap = ccap.number_input("Cell capacity [Ah]", 0.5, 200.0, 5.0,
+                            0.1, key="bh_cap")
+    order = 1 if cord.selectbox("Model order",
+                                ["1 RC branch", "2 RC branches"],
+                                key="bh_order").startswith("1") \
+        else 2
+    prr = cprr.number_input("Min rest before a pulse counts [s]",
+                            5.0, 3600.0, 20.0, 5.0, key="bh_prr")
+    cA, cB = st.columns(2)
+    raw_ups = cA.file_uploader(
+        "1) Raw data: zip of condition folders, or CSV(s)",
+        type=["zip", "csv", "txt", "xlsx"],
+        accept_multiple_files=True, key="bh_raw")
+    card_up = cB.file_uploader(
+        "2) Battery model card (the *_card_upload_to_app.csv "
+        "file)", type=["csv"], key="bh_card")
+
+    card = meta = None
+    cond_results = []
+    if card_up is not None:
+        try:
+            card, meta = BC.card_read(card_up)
+            st.session_state["bat_src"] = (
+                f"card: {meta.get('cell', '?')}")
+        except Exception as e:
+            st.error(f"Card rejected: {e}")
+            card = None
+    elif raw_ups:
+        import tempfile
+        for up in raw_ups:
+            try:
+                if up.name.lower().endswith(".zip"):
+                    wd = tempfile.mkdtemp(prefix="bat_")
+                    BC.extract_zip(up.read(), wd)
+                    for dcond in BC.find_condition_dirs(wd):
+                        nm = os.path.basename(dcond)
+                        tC, rC, rep = BC.parse_condition(nm)
+                        dfc, srcs, tmeas = BC.load_condition_dir(
+                            dcond)
+                        out = BH.run_pipeline(
+                            dfc, cap_Ah=cap, order=order,
+                            min_pre_rest=prr)
+                        cond_results.append(dict(
+                            name=nm,
+                            temp_C=(tmeas if tmeas is not None
+                                    else (tC if tC is not None
+                                          else 25.0)),
+                            rate_C=rC if rC is not None else 1.0,
+                            rep=rep, out=out, source=srcs))
+                else:
+                    if up.name.lower().endswith(".xlsx"):
+                        dfc = BC.load_split_xlsx([up])
+                    else:
+                        dfc = pd.read_csv(up)
+                    out = BH.run_pipeline(dfc, cap_Ah=cap,
+                                          order=order,
+                                          min_pre_rest=prr)
+                    cond_results.append(dict(
+                        name=up.name, temp_C=25.0, rate_C=1.0,
+                        rep=1, out=out, source="upload"))
+            except Exception as e:
+                st.error(f"{up.name}: {e}")
+        if cond_results:
+            card, meta = BC.campaign_to_card(
+                cond_results, cap_Ah=cap,
+                cell_name=os.path.splitext(
+                    raw_ups[0].name)[0])
+            st.session_state["bat_src"] = (
+                f"fitted: {meta['cell']}")
+
+    if card is None:
+        st.session_state["bat_src"] = "default (simplified)"
+        st.session_state["bat_model"] = BC.default_model()
+        st.info(
+            "No data or card loaded - the **simplified default** "
+            "is active: R0 = 20 mΩ, R1 = 10 mΩ, τ = 30 s, OCV "
+            "linear 3.0-4.2 V. Upload measurements or a card "
+            "above to replace it everywhere.")
+        return
+
+    if cond_results:
+        st.success("Campaign fitted. Per-condition validation "
+                   "(the whole measured stream re-simulated):")
+        vt = pd.DataFrame([
+            dict(condition=c["name"],
+                 T_meas=f"{c['temp_C']:.1f} °C",
+                 rate=f"{c['rate_C']:g}C",
+                 pulses=len(c["out"]["pulses"]),
+                 rmse_mV=round(c["out"]["rmse_mv"], 2),
+                 R0_50=f"{1000*float(c['out']['model']['r0'](50)):.2f} mΩ",
+                 q_pulsing=f"{c['out']['heat']['q_mean_active']:.2f} W")
+            for c in cond_results])
+        st.dataframe(vt, width='stretch', height=230)
+    else:
+        st.success(
+            f"Card loaded: {meta.get('cell', '?')}, "
+            f"{len(card)} rows, capacity "
+            f"{meta.get('capacity_Ah', '?')} Ah. Validation "
+            "recorded at fit time: "
+            + ("; ".join(meta.get("validation", []))
+               if meta.get("validation") else "(none stored)"))
+
+    conds = BC.conditions_in(card)
+    labels = [f"{t:g} °C · {r:g}C · run {int(p)}"
+              for t, r, p in conds]
+    pick = st.selectbox("Condition for the model in use",
+                        labels, key="bh_pick")
+    tC, rC, rep = conds[labels.index(pick)]
+    model = BC.model_from_card(card, temp_C=tC, rate_C=rC,
+                               rep=rep)
+    st.session_state["bat_model"] = model
+    st.session_state["bat_card"] = card
+
+    cq1, cq2, cq3 = st.columns(3)
+    rate_q = cq1.number_input("Design C-rate for heat", 0.1, 10.0,
+                              1.0, 0.1, key="bh_rq")
+    soc_q = cq2.number_input("SOC for heat [%]", 5.0, 95.0, 50.0,
+                             5.0, key="bh_sq")
+    qcell = BC.q_steady(model, rate_q * cap, soc_q)
+    cq3.metric("Heat per cell, sustained",
+               f"{qcell*1000:.0f} mW")
+    def _use_q():
+        st.session_state["fxb_q"] = float(np.round(
+            max(qcell, 0.01), 2))
+    st.button("Use this heat as the FEA bar heat",
+              on_click=_use_q, key="bh_useq")
+
+    ce1, ce2 = st.columns(2)
+    ce1.download_button(
+        "Battery model card (CSV - app, COMSOL, analytical)",
+        data=BC.card_write(card, meta or {}),
+        file_name=f"{(meta or {}).get('cell', 'cell')}"
+                  "_card_upload_to_app.csv",
+        mime="text/csv", type="primary", key="bh_dlcard")
+    qty = ce2.selectbox("2-column COMSOL export",
+                        ["ocv_V", "r0_ohm", "r1_ohm", "tau1_s",
+                         "q_pulse_W"], key="bh_qty")
+    ce2.download_button(
+        f"Download {qty} vs SOC at {tC:g} °C {rC:g}C",
+        data=BC.comsol_two_col(card, qty, tC, rC),
+        file_name=f"{qty}_{tC:g}degC_{rC:g}C_for_comsol.csv",
+        mime="text/csv",
+        key="bh_dl2col")
+
+    fR = go.Figure()
+    for (t_, r_, p_), lb in zip(conds, labels):
+        sub = card[(card["temp_C"] == t_)
+                   & (card["rate_C"] == r_)
+                   & (card["rep"] == p_)
+                   & (card["dir"] == "dis")].sort_values(
+            "soc_pct")
+        fR.add_scatter(x=sub["soc_pct"], y=1000 * sub["r0_ohm"],
+                       mode="markers+lines", name=lb)
+    fR.update_layout(height=300, xaxis_title="SOC [%]",
+                     yaxis_title="R0 [mΩ] (discharge)",
+                     legend=dict(orientation="h", y=1.12),
+                     margin=dict(l=8, r=8, t=30, b=8),
+                     title=dict(text="Ohmic resistance across the "
+                                "campaign - the temperature and "
+                                "rate story in one plot",
+                                font=dict(size=12), x=0.02))
+    st.plotly_chart(fR, width='stretch', key="bh_fr2")
+    cP1, cP2 = st.columns(2)
+    sub0 = card[(card["temp_C"] == tC) & (card["rate_C"] == rC)
+                ].sort_values("soc_pct")
+    fO = go.Figure()
+    fO.add_scatter(x=sub0["soc_pct"], y=sub0["ocv_V"],
+                   mode="markers", name="card points",
+                   marker=dict(size=6, color="#38BDF8"))
+    sg = np.linspace(5, 95, 90)
+    fO.add_scatter(x=sg, y=model["ocv"](sg), mode="lines",
+                   name="model", line=dict(color="#0EA5E9"))
+    fO.update_layout(height=280, xaxis_title="SOC [%]",
+                     yaxis_title="OCV [V]",
+                     margin=dict(l=8, r=8, t=30, b=8),
+                     legend=dict(orientation="h", y=1.12),
+                     title=dict(text="OCV (selected condition)",
+                                font=dict(size=12), x=0.02))
+    cP1.plotly_chart(fO, width='stretch', key="bh_fo2")
+    fQ = go.Figure()
+    rates = np.linspace(0.2, 5.0, 60)
+    for s_ in (20.0, 50.0, 80.0):
+        fQ.add_scatter(x=rates,
+                       y=[1000 * BC.q_steady(model, rr * cap, s_)
+                          for rr in rates],
+                       mode="lines", name=f"SOC {s_:.0f}%")
+    fQ.update_layout(height=280, xaxis_title="C-rate",
+                     yaxis_title="heat per cell [mW]",
+                     margin=dict(l=8, r=8, t=30, b=8),
+                     legend=dict(orientation="h", y=1.12),
+                     title=dict(text="Sustained heat map "
+                                "q = I²(R0+R1) from the card",
+                                font=dict(size=12), x=0.02))
+    cP2.plotly_chart(fQ, width='stretch', key="bh_fq2")
+    st.caption(
+        "The FEA tab shows which battery source is active. "
+        "Charge-direction rows are in the card too (dir column); "
+        "the plots above use discharge.")
+
+
 def fea_tab(d, g, fl, cool_df, loop):
     st.markdown("#### FEA - the basic module (COMSOL, 2D + 3D)")
     st.markdown(
@@ -2688,10 +2971,15 @@ def fea_tab(d, g, fl, cool_df, loop):
                   fxb_gap=10.0, fxb_xo=0.0, fxb_q=0.75, fxb_t0=25.0,
                   fxb_mat="Aluminium (WP3 values)",
                   fx_fluid="Deionized water",
-                  fxb_top="Fixed temperature (WP3 case)",
+                  fxb_cfg="Fixed-top (WP3 case)",
                   fxb_ttop=25.0, fxb_km=1.0)
     st.button("Load the WP3 case (one click)",
               on_click=_wp3, type="primary", key="fxb_preset")
+    st.caption("Battery source for heat: **"
+               + st.session_state.get("bat_src",
+                                      "default (simplified)")
+               + "** - set in the Battery tab, where one click "
+               "sends its sustained heat into the Q field below.")
 
     c1, c2, c3, c4 = st.columns(4)
     Wt = c1.slider("Tank width [mm]", 10.0, 400.0, 25.0, 1.0,
@@ -2719,18 +3007,35 @@ def fea_tab(d, g, fl, cool_df, loop):
                          index=int((cool_df["name"] ==
                                     "Deionized water").idxmax()),
                          key="fx_fluid")
-    topbc = c3.selectbox("Top boundary",
-                         ["Fixed temperature (WP3 case)",
-                          "Adiabatic (sealed)"], key="fxb_top")
-    top_fixed = topbc.startswith("Fixed")
+    cfg = c3.selectbox("Configuration",
+                       ["Fixed-top (WP3 case)",
+                        "Sealed (adiabatic, transient)",
+                        "Fan upflow (open channel)"], key="fxb_cfg")
+    top_fixed = cfg.startswith("Fixed")
+    fan = cfg.startswith("Fan")
+    Ttop, u_fan, T_in = 25.0, 0.0005, 25.0
     if top_fixed:
         Ttop = c4.slider("Top temperature [°C]", 5.0, 60.0, 25.0,
                          1.0, key="fxb_ttop")
         study = st.selectbox("Study", ["Stationary (steady state)",
                                        "Transient"], key="fxb_study")
         steady = study.startswith("Stat")
+    elif fan:
+        u_fan = c4.slider("Fan upward speed [mm/s]", 0.1, 20.0,
+                          0.5, 0.1, key="fxb_uf") / 1000.0
+        T_in = st.slider("Inlet oil temperature [°C]", 5.0, 60.0,
+                         25.0, 1.0, key="fxb_tin")
+        steady = True
+        st.caption("Fan mode: the floor is the inlet at the set "
+                   "temperature, the lid is the outflow, and the "
+                   "oil advects upward at the fan speed - the "
+                   "open-channel abstraction of bottom fans (the "
+                   "return path is external to the modelled "
+                   "slice). Validation tip: at high speeds the "
+                   "outlet rise shrinks below the mesh's mK "
+                   "noise; ~0.5 mm/s keeps the anchor "
+                   "well-resolved.")
     else:
-        Ttop = 25.0
         steady = False
         st.caption("Sealed tank: no steady state exists, so the "
                    "study is Transient.")
@@ -2767,7 +3072,10 @@ def fea_tab(d, g, fl, cool_df, loop):
     # ipl3d, whatever the variant - both are generated on every
     # visit from the same settings.
     P.update(bar_name=mat, top_fixed=top_fixed, T_top=Ttop,
-             k_mult=km, steady=steady, build_only=build_only)
+             k_mult=km, steady=steady, build_only=build_only,
+             flow_mode="fan" if fan else
+                       ("top" if top_fixed else "sealed"),
+             u_fan=u_fan, T_in=T_in)
     qv = Q / (a * a * Lz)
 
     cx1, cx2 = st.columns([1.4, 1])
@@ -2790,6 +3098,14 @@ def fea_tab(d, g, fl, cool_df, loop):
         if top_fixed:
             fig.add_shape(type="line", x0=0, y0=Hm, x1=Wm, y1=Hm,
                           line=dict(color="#0369A1", width=5))
+        if fan:
+            for fx0 in (0.18, 0.5, 0.82):
+                fig.add_annotation(x=Wm * fx0, y=Hm * 0.30,
+                                   ax=Wm * fx0, ay=Hm * 0.06,
+                                   xref="x", yref="y", axref="x",
+                                   ayref="y", showarrow=True,
+                                   arrowhead=3, arrowwidth=2,
+                                   arrowcolor="#0EA5E9")
         bx0 = Wm / 2 - am / 2 + xm
         fig.add_shape(type="rect", x0=bx0, y0=gm, x1=bx0 + am,
                       y1=gm + am,
@@ -2798,14 +3114,18 @@ def fea_tab(d, g, fl, cool_df, loop):
         fig.add_annotation(x=Wm / 2, y=Hm + Hm * 0.07,
                            text=(f"top: T = {Ttop:.0f} °C (fixed)"
                                  if top_fixed else
+                                 "top: outflow" if fan else
                                  "top: adiabatic (sealed)"),
                            showarrow=False,
                            font=dict(size=10, color="#0369A1"
                                      if top_fixed else "#64748B"))
         fig.add_annotation(x=Wm / 2, y=-Hm * 0.08,
                            text=f"tank {Wm:.0f} × {Hm:.0f} mm · "
-                                f"{fx_fl} (k × {km:.1f}) · sides "
-                                f"and bottom adiabatic",
+                                f"{fx_fl} (k × {km:.1f}) · " +
+                                (f"floor inflow {T_in:.0f} °C · "
+                                 f"u = {u_fan*1000:.1f} mm/s up"
+                                 if fan else
+                                 "sides and bottom adiabatic"),
                            showarrow=False,
                            font=dict(size=10, color="#475569"))
         fig.add_annotation(x=bx0 + am / 2, y=gm + am / 2,
@@ -2827,6 +3147,28 @@ def fea_tab(d, g, fl, cool_df, loop):
                    "match the 2D field to solver noise, and the "
                    "checker below measures that from the 3D "
                    "export directly.")
+        if fan:
+            _fm, _fi = fan_mean_exact(
+                np.array([Ht]), Wt, Ht, a, gap, Q / (a * a * Lz),
+                km * P["k_oil"], P["rho_oil"], P["cp_oil"], u_fan,
+                T_in)
+            st.metric("Exact outlet mean (the anchor)",
+                      f"{_fi['T_out']:.4f} °C")
+            _leak = 100 * _fi["cond_bottom_W_per_m"] / (
+                Q / Lz)
+            st.markdown(
+                "**Correctness check:** integrating the 2D "
+                "equation across the width gives an exact 1D "
+                "advection-diffusion balance for the plane-mean "
+                "temperature - closed form at any Péclet number "
+                f"(here Pe = {_fi['Pe']:.0f}). The exported models "
+                "tabulate the FEA outlet mean against this exact "
+                "value, and the energy split is exact too: "
+                f"advected out of the top plus the "
+                f"{_leak:.1f}% conductive leak back through the "
+                "inlet equals the bar heat identically. The full "
+                "2D wake comparison joins in a later rung; the "
+                "mean profile carries the verdict.")
         if top_fixed:
             st.metric("Anchors at the solution",
                       f"top flux = {Q/Lz:.2f} W/m (2D) · "
@@ -2929,11 +3271,75 @@ def fea_tab(d, g, fl, cool_df, loop):
                 "agreement, measured; the report's Fluent pair "
                 "differed by ~20 mK. Checking the mid-depth slice "
                 "below.")
-        m = wp3_check_field(fx_, fy_, fT_, Wt, Ht, a, xc_, gap,
-                            Q / (a * a * Lz), k_eff, Ttop)
+        if fan:
+            m = fan_check_field(fx_, fy_, fT_, Wt, Ht, a, xc_, gap,
+                                Q / (a * a * Lz), k_eff,
+                                P["rho_oil"], P["cp_oil"], u_fan,
+                                T_in)
+        else:
+            m = wp3_check_field(fx_, fy_, fT_, Wt, Ht, a, xc_, gap,
+                                Q / (a * a * Lz), k_eff, Ttop)
         st.session_state.setdefault("fx_fields", {})[up.name] = (
             fx_, fy_, fT_)
         _fchecks.append((up.name, finf, m))
+        if fan:
+            if m["anchors_ok"]:
+                st.success(
+                    f"{up.name}: fan anchors PASS - inlet row "
+                    f"within {m['inlet_dev']*1000:.0f} mK of T_in, "
+                    f"outlet mean within "
+                    f"{m['outlet_dev']*1000:.0f} mK of the exact "
+                    f"closed form, mean-profile RMS "
+                    f"{m['rms_mean']*1000:.0f} mK, advected/exact "
+                    f"= {m['adv_ratio']:.3f}.")
+            else:
+                st.error(
+                    f"{up.name}: fan anchors FAIL (inlet "
+                    f"{m['inlet_dev']*1000:.0f} mK, outlet "
+                    f"{m['outlet_dev']*1000:.0f} mK, RMS "
+                    f"{m['rms_mean']*1000:.0f} mK) - check u_fan "
+                    "and T_in match the run, then convergence.")
+            g1, g2, g3 = st.columns(3)
+            g1.metric("Bar peak (numerical)",
+                      f"{m['T_peak']:.3f} °C")
+            g2.metric("Exact outlet mean",
+                      f"{m['T_out']:.4f} °C")
+            g3.metric("Péclet number", f"{m['Pe']:.0f}")
+            fgn = go.Figure(go.Heatmap(
+                x=m["x"] * 1000, y=m["y"] * 1000, z=m["T"],
+                colorscale="Turbo", colorbar=dict(thickness=10)))
+            fgn.update_layout(height=320,
+                              title=dict(text="Numerical field "
+                                         "(wake model joins in a "
+                                         "later rung)",
+                                         font=dict(size=12),
+                                         x=0.02),
+                              margin=dict(l=6, r=6, t=28, b=6),
+                              yaxis=dict(scaleanchor="x"))
+            st.plotly_chart(fgn, width='stretch',
+                            key=f"fx_fan_{up.name}")
+            fp = go.Figure()
+            fp.add_scatter(x=m["mean_num"], y=m["y"] * 1000,
+                           mode="markers",
+                           name="numerical row mean",
+                           marker=dict(size=5, color="#F59E0B"))
+            fp.add_scatter(x=m["mean_exact"], y=m["y"] * 1000,
+                           mode="lines",
+                           name="exact closed form (any Pe)",
+                           line=dict(color="#38BDF8", width=2.5))
+            fp.update_layout(height=320,
+                             xaxis_title="plane-mean T [°C]",
+                             yaxis_title="height y [mm]",
+                             margin=dict(l=8, r=8, t=26, b=8),
+                             legend=dict(orientation="h", y=1.05),
+                             title=dict(text="The rigorous anchor: "
+                                        "mean profile vs exact "
+                                        "advection-diffusion",
+                                        font=dict(size=12),
+                                        x=0.02))
+            st.plotly_chart(fp, width='stretch',
+                            key=f"fx_fanprof_{up.name}")
+            continue
         if m["anchors_ok"]:
             st.success(
                 f"{up.name}: energy anchors PASS - top row within "
@@ -3032,11 +3438,13 @@ def fea_tab(d, g, fl, cool_df, loop):
             "depth variation [mK] |\n|---|---|---|---|---|---|---|"
             "\n" + "\n".join("| %s | %s | %s | %s | %s | %s | %s |"
                               % r for r in rows))
-        st.markdown(
-            "Analytical bar estimate (series average over the "
-            f"footprint): **{_fchecks[0][2]['T_bar_series']:.3f} "
-            "°C** - remember it overshoots the near-isothermal "
-            "aluminium bar by construction.")
+        _tbs = _fchecks[0][2].get("T_bar_series")
+        if _tbs is not None:
+            st.markdown(
+                "Analytical bar estimate (series average over the "
+                f"footprint): **{_tbs:.3f} °C** - remember it "
+                "overshoots the near-isothermal aluminium bar by "
+                "construction.")
         _flds = list(st.session_state.get("fx_fields", {}).items())
         for i_ in range(len(_flds)):
             for j_ in range(i_ + 1, len(_flds)):
@@ -4022,6 +4430,98 @@ def smoke():
     print(f"wp3 3d: markers OK, z-invariant roundtrip zvar "
           f"{_i3['zvar']:.1e}, perturbed plane flagged "
           f"{_i3b['zvar']:.2f} K")
+    # ---- fan rung: closed form vs independent FD; energy identity;
+    #      exporter markers in both dimensions
+    def _fd(WW, HH, aa, gg, qq, kk, rr, cc, uu, Ti, N=4000):
+        yy = np.linspace(0, HH, N); hh = yy[1] - yy[0]
+        qb = np.where((yy >= gg) & (yy <= gg + aa),
+                      qq * aa / WW, 0.0)
+        lo = kk / hh ** 2 + rr * cc * uu / (2 * hh)
+        di = -2 * kk / hh ** 2
+        up = kk / hh ** 2 - rr * cc * uu / (2 * hh)
+        A_ = np.zeros((N, N)); b_ = -qb.copy()
+        idx = np.arange(1, N - 1)
+        A_[idx, idx - 1] = lo; A_[idx, idx] = di; A_[idx, idx + 1] = up
+        A_[0, 0] = 1; b_[0] = Ti
+        A_[-1, -1] = 1; A_[-1, -2] = -1; b_[-1] = 0
+        return yy, np.linalg.solve(A_, b_)
+    for _u in (0.01, 0.0005):
+        _yy, _Tfd = _fd(0.025, 0.030, 0.005, 0.010, 1e5, 0.6,
+                        997.0, 4180.0, _u, 25.0)
+        _Tan, _fi = fan_mean_exact(_yy, 0.025, 0.030, 0.005,
+                                   0.010, 1e5, 0.6, 997.0,
+                                   4180.0, _u, 25.0)
+        assert np.max(np.abs(_Tan - _Tfd)) < 1e-3
+        _res = (_fi["adv_W_per_m"] + _fi["cond_bottom_W_per_m"]
+                - 1e5 * 0.005 * 0.005)
+        assert abs(_res) < 1e-9, "fan energy split must be exact"
+    _pf = dict(_pb, top_fixed=False, steady=True, flow_mode="fan",
+               u_fan=0.0005, T_in=25.0)
+    _jf2 = _FX.comsol_basic_2d(dict(_pf, cls="ipl2d"))
+    _jf3 = _FX.comsol_basic_3d(dict(_pf, cls="ipl3d"))
+    assert "FluidHeatTransferModel" in _jf2 and \
+        '{"0", "u_fan"}' in _jf2 and "Tout_pred" in _jf2 and \
+        '"Outflow"' in _jf2 and 'feature("temp1")' not in _jf2
+    assert '{"0", "0", "u_fan"}' in _jf3 and \
+        "Tout_pred" in _jf3 and '"Outflow"' in _jf3
+    _jfb = _FX.comsol_basic_2d(dict(_pf, cls="ipl2d",
+                                    build_only=True))
+    assert 'std1").run()' not in _jfb
+    print("fan rung: closed form vs FD < 1 mK at Pe 2084 and 104, "
+          "energy split exact, exporter markers OK both dims")
+    # ---- battery card: parser, round-trip, defaults
+    import battery_card as _BC
+    assert _BC.parse_condition("JP50_25deg_3C_2nd") == (25.0, 3.0, 2)
+    assert _BC.parse_condition("X_35deg_1C") == (35.0, 1.0, 1)
+    _cd = pd.DataFrame(dict(
+        temp_C=[25.0, 25.0, 35.0], rate_C=[1.0, 1.0, 1.0],
+        rep=[1, 1, 1], soc_pct=[30.0, 70.0, 50.0],
+        dir=["dis", "dis", "dis"], i_pulse_A=[5, 5, 5],
+        dur_s=[10, 10, 10], ocv_V=[3.5, 3.9, 3.7],
+        r0_ohm=[0.006, 0.005, 0.0036], r1_ohm=[0.003, 0.003,
+                                               0.002],
+        tau1_s=[20, 22, 18], r2_ohm=[np.nan] * 3,
+        tau2_s=[np.nan] * 3, q_pulse_W=[0.2, 0.2, 0.15]))
+    _txt = _BC.card_write(_cd, dict(cell="T", capacity_Ah=5.0,
+                                    validation=["x: rmse=1"]))
+    _c2, _m2 = _BC.card_read(_txt)
+    assert len(_c2) == 3 and _m2["capacity_Ah"] == 5.0
+    _mdl = _BC.model_from_card(_c2, temp_C=25.0, rate_C=1.0)
+    assert abs(float(_mdl["r0"](50.0)) - 0.0055) < 1e-6
+    _mdl35 = _BC.model_from_card(_c2, temp_C=34.0, rate_C=1.0)
+    assert abs(float(_mdl35["r0"](50.0)) - 0.0036) < 1e-9
+    _dm = _BC.default_model()
+    assert abs(_BC.q_steady(_dm, 5.0, 50.0) - 25 * 0.03) < 1e-9
+    _tc = _BC.comsol_two_col(_c2, "r0_ohm", 25.0, 1.0)
+    assert "soc_pct,r0_ohm" in _tc and _tc.count("\n") >= 4
+    print("battery card: parser, round-trip, nearest-condition, "
+          "default and 2-col export OK")
+    # ---- HPPC battery model: ground truth must be recovered
+    import battery_hppc as _BH
+    _btr = _BH.synth_truth()
+    _bout = _BH.run_pipeline(_BH.make_synth_hppc(noise_mv=0.3,
+                                                 seed=1),
+                             cap_Ah=4.5, order=1)
+    _bsub = _bout["tab"].dropna(subset=["r1"])
+    _r0e = float(np.nanmedian(np.abs(_bsub["r0"] -
+                 _btr["r0"](_bsub["soc"])) /
+                 _btr["r0"](_bsub["soc"])))
+    _r1e = float(np.nanmedian(np.abs(_bsub["r1"] -
+                 _btr["r1"](_bsub["soc"])) /
+                 _btr["r1"](_bsub["soc"])))
+    _te = float(np.nanmedian(np.abs(_bsub["tau1"] - 25.0) / 25.0))
+    _gg = np.linspace(15, 95, 30)
+    _oce = float(np.sqrt(np.mean((_bout["model"]["ocv"](_gg) -
+                 _btr["ocv"](_gg)) ** 2)) * 1000)
+    assert len(_bout["pulses"]) >= 18
+    assert _r0e < 0.03 and _r1e < 0.10 and _te < 0.15
+    assert _oce < 6 and _bout["rmse_mv"] < 4
+    assert _bout["sim"]["ident_rel"] < 5e-3
+    print(f"hppc: {len(_bout['pulses'])} pulses, R0 err "
+          f"{100*_r0e:.1f}%, R1 {100*_r1e:.1f}%, tau "
+          f"{100*_te:.1f}%, OCV {_oce:.1f} mV, sim RMSE "
+          f"{_bout['rmse_mv']:.2f} mV, energy law "
+          f"{100*_bout['sim']['ident_rel']:.2f}%")
     print(f"wp3 analytics: series peak {_T.max():.2f} degC, "
           f"top-flux {_Qp:.3f} W/m, roundtrip rms "
           f"{_m['rms_out']:.1e}, perturbation flagged "
@@ -4900,7 +5400,7 @@ def main():
     tabs = st.tabs(["Design", "Duty", "Results", "Cockpit", "Zones",
                     "Improve", "Ideas", "Safety", "Compare",
                     "Learn", "Cases", "FEA", "Validate", "System",
-                    "Report"])
+                    "Report", "Battery"])
 
     with tabs[0]:
         colL, colR = st.columns([1.15, 1], gap="large")
@@ -6457,6 +6957,9 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
                 mime="application/pdf",
                 use_container_width=True, key="rx_dl_pdf")
         render_report_tab(secs, figs_r, meta_r)
+
+    with tabs[15]:
+        battery_tab()
 
     # ---------------- Validate and tune ---------------- #
     with tabs[10]:

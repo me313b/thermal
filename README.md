@@ -587,6 +587,34 @@ thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
 
+## v10.21
+
+Self-explaining battery file names, same cure as the COMSOL exports. The model card downloads as <cell>_card_upload_to_app.csv (the one that goes back into the app - the uploader label says so too), and the 2-column COMSOL extracts as <quantity>_<temp>degC_<rate>C_for_comsol.csv (degC removes the 25C-vs-rate ambiguity). The card reader keys on the '%' header, not the filename, so previously saved cards still load.
+
+## v10.20
+
+The JP50 campaign becomes a portable battery model card - measured, validated, and consumable by the app, COMSOL and the analytical layer.
+
+- battery_card.py: BioLogic loaders (continuous .mpr streams via galvani, Split-file Excel concatenation with the measured temperature), condition parsing from folder names (temp / C-rate / repeat), and the card format v1: ONE CSV, one row per analysed pulse (temp_C, rate_C, rep, soc_pct, dir, i_pulse_A, ocv_V, r0_ohm, r1_ohm, tau1_s, r2/tau2, q_pulse_W), with COMSOL-native '%' comment header carrying cell metadata and the per-condition validation RMSEs. card_write/card_read round-trip is smoke-tested, as are the condition parser, nearest-condition model reconstruction, the simplified default, q_steady and the 2-column COMSOL export.
+- Battery tab v2, three ways in and clearly ranked: raw data (zip of condition folders, xlsx splits, or plain CSV) -> per-condition extraction with whole-stream re-simulation RMSE shown in a validation table -> card built and downloadable; a previously exported card -> used directly, no raw data needed; nothing -> a labelled simplified default (20 mOhm + 10 mOhm, linear OCV). Cross-campaign R0(SOC) plot, OCV, and a sustained-heat map q = I^2 (R0+R1); design C-rate + SOC inputs with one click sending the per-cell heat into the FEA tab, which now displays the active battery source.
+- JP50 results (5 conditions, ~12 h streams each, 26-30 pulses): R0@50% = 6.0 / 5.7 / 5.5 mOhm at 25 degC 1C/2C/3C (3C repeat 5.3 - within 4 percent), 3.6 mOhm at 35 degC; re-simulation RMSE 6.6-13.2 mV with 1 RC; pulsing-mean heat 0.24 / 0.55 / 1.04 W at 1/2/3C - near-quadratic in rate as it should be.
+
+## v10.19
+
+Battery model from HPPC measurements - a new "Battery" tab.
+
+- Upload an HPPC CSV (time / current / voltage; names matched loosely, ms or s auto-detected, discharge sign auto-detected with override) and the app extracts the equivalent-circuit model: OCV(SOC) from the rests, R0(SOC) from the instantaneous step at each pulse edge, and one or two RC branches from the relaxation tails, fitted with a deterministic time-constant grid plus linear least squares (no fragile optimiser). SOC by coulomb counting from the set capacity, or taken from an soc column if present.
+- Proof over assertion, as everywhere else: the extracted model re-simulates the entire measured profile (exact piecewise-constant-current RC update) with the millivolt RMS error reported up front, and the energy law int I(OCV-V) dt = int (I^2 R0 + V1^2/R1) dt is checked over the profile - the two differ pointwise by exactly the capacitor storage rate, a distinction the module documents. Smoke: on synthetic 21700 data with known ground truth (27 pulses, 0.3 mV noise) the extractor recovers R0 to 1.9%, R1 to 4.7%, tau to 5.2%, OCV to 2.2 mV, re-simulates at 3.44 mV RMS, closes the energy law to 0.29%.
+- The thermal handshake: instantaneous heat q = I^2 R0 + V1^2/R1 plotted, with profile-mean, pulsing-mean and peak metrics, and a one-click "use as the FEA bar heat" button. A synthetic sample CSV is downloadable in-tab as the format reference (and round-trips through the uploader as an end-to-end check). Entropic heat and R0(T) noted as the next data-driven additions.
+
+## v10.18
+
+The fan rung: the real architecture's first physics (bottom fans pushing oil up), in 2D + 3D + closed-form analytics, with the plan-view question answered.
+
+- New Configuration in the FEA tab: "Fan upflow (open channel)" alongside Fixed-top (WP3) and Sealed. The floor becomes the inlet at T_in, the lid an outflow, and the oil advects upward at u_fan (0.1-20 mm/s; ~0.5 mm/s keeps the anchor above mesh noise) - the open-channel abstraction of bottom fans, with the return path external to the modelled slice. Both ipl2d and ipl3d gain the mode: Fluid feature with prescribed velocity on the liquid (complement selection), inlet TemperatureBoundary, Outflow lid; the velocity property has a commented in-file fallback (minput_velocity) in case 6.4 stores it as a model input.
+- Analytics, exact at any Peclet number: integrating the 2D equation across the width gives a 1D advection-diffusion ODE for the plane-mean temperature, solved piecewise in closed form with only non-positive exponents (safe at Pe ~ 2000). Verified in smoke against an independent finite-difference solve to < 1 mK at Pe 2084 and 104, with the energy split (advected out of the top + conductive leak through the inlet = bar heat) exact to 1e-9. The exported models tabulate the FEA outlet mean against the closed-form Tout_pred with its deviation; the checker gains a fan branch (inlet/outlet/mean-profile anchors, advected-power ratio, numerical heatmap, mean-profile overlay). The full-2D wake solution (moving line source with image sinks) is the declared next analytical rung.
+- Design note recorded: the plan-view 2D is parked - its unique payload (cell-to-cell interaction) is second-order for the fans-up architecture and better handled later as a two-cell case; the FRONT view is the development axis, each rung carrying a 3D twin, until the three genuinely 3D effects (water heat-up along the pipe axis, discrete fan jets, row-end effects) enter by name.
+
 ## v10.17
 
 Both dimensions, always, and the Fluent labelling corrected.
