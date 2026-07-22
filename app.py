@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.24"
+APP_VERSION = "v10.25"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -2276,7 +2276,8 @@ def wp3_exact_mean(y, W, H, bw, bh, gap, q_v, k, T_top):
     return T_top + (c0 / k) * I
 
 
-def wp3_check_field(x, y, T, W, H, bw, bh, xc, gap, q_v, k, T_top):
+def wp3_check_field(x, y, T, W, H, bw, bh, xc, gap, q_v, k, T_top,
+                    series=True):
     """Judge an uploaded field: rigorous integral anchors first, then
     agreement with the analytical series outside the bar."""
     order = np.argsort(y)
@@ -2299,23 +2300,34 @@ def wp3_check_field(x, y, T, W, H, bw, bh, xc, gap, q_v, k, T_top):
                                abs(slope_exact))
     else:
         m["slope_rel"] = 0.0
-    Ts = wp3_series_field(x, y, W, H, bw, bh, xc, gap, q_v, k, T_top)
+    Ts = (wp3_series_field(x, y, W, H, bw, bh, xc, gap, q_v, k,
+                           T_top) if series else None)
     X, Y = np.meshgrid(x, y)
     bar = ((X > xc - bw / 2 - 0.02 * W) & (X < xc + bw / 2 + 0.02 * W)
            & (Y > y0 - 0.02 * H) & (Y < y1 + 0.02 * H))
-    d = (T - Ts)[~bar & ~np.isnan(T)]
-    m["rms_out"] = float(np.sqrt(np.mean(d ** 2)))
-    m["max_out"] = float(np.max(np.abs(d)))
     m["T_peak"] = float(np.nanmax(T))
-    inbar = ((X >= xc - bw / 2) & (X <= xc + bw / 2) & (Y >= y0)
-             & (Y <= y1))
-    m["T_bar_series"] = float(np.mean(Ts[inbar])) if inbar.any() \
-        else float("nan")
+    m["mean_exact"] = wp3_exact_mean(y, W, H, bw, bh, gap, q_v, k,
+                                     T_top)
+    if Ts is not None:
+        d = (T - Ts)[~bar & ~np.isnan(T)]
+        m["rms_out"] = float(np.sqrt(np.mean(d ** 2)))
+        m["max_out"] = float(np.max(np.abs(d)))
+        inbar = ((X >= xc - bw / 2) & (X <= xc + bw / 2)
+                 & (Y >= y0) & (Y <= y1))
+        m["T_bar_series"] = float(np.mean(Ts[inbar])) \
+            if inbar.any() else float("nan")
+    else:
+        # multi-row: the single-strip series does not apply, but
+        # the plane-mean is exact with the TOTAL heated width -
+        # judge the field by its row-mean profile instead
+        dm = rm - m["mean_exact"]
+        m["rms_out"] = float(np.sqrt(np.nanmean(dm ** 2)))
+        m["max_out"] = float(np.nanmax(np.abs(dm)))
+        m["T_bar_series"] = None
     m["anchors_ok"] = (m["top_dev"] < 0.05 and
                        m["below_flat"] < 0.08 and
                        m["slope_rel"] < 0.05)
     m["Ts"] = Ts; m["mean_num"] = rm
-    m["mean_exact"] = wp3_exact_mean(y, W, H, bw, bh, gap, q_v, k, T_top)
     m["x"] = x; m["y"] = y; m["T"] = T
     return m
 
@@ -3013,23 +3025,42 @@ def fea_tab(d, g, fl, cool_df, loop):
                           "Battery row (count × cell size)"],
                          key="fxb_gm")
     if gmode.startswith("Battery"):
-        bb1, bb2, bb3, bb4 = st.columns(4)
-        n_cells = bb1.number_input("Cells in the row", 1, 200, 10,
-                                   1, key="fxb_nc")
-        cell_d = bb2.number_input("Cell diameter [mm]", 5.0, 80.0,
+        bb1, bb2, bb3, bb4, bb5 = st.columns(5)
+        n_rows = bb1.number_input("Rows across the width", 1, 30,
+                                  4, 1, key="fxb_nr")
+        n_cells = bb2.number_input("Cells per row (into the "
+                                   "plane)", 1, 200, 10, 1,
+                                   key="fxb_nc")
+        cell_d = bb3.number_input("Cell diameter [mm]", 5.0, 80.0,
                                   21.0, 0.1, format="%.1f",
                                   key="fxb_cd") / 1000
-        cell_h = bb3.number_input("Cell height [mm]", 10.0, 200.0,
+        cell_h = bb4.number_input("Cell height [mm]", 10.0, 200.0,
                                   70.0, 0.1, format="%.1f",
                                   key="fxb_ch") / 1000
+        row_gap = bb5.number_input("Gap between rows [mm]", 0.5,
+                                   60.0, 6.0, 0.1, format="%.1f",
+                                   key="fxb_rg") / 1000
         b_w, b_h = cell_d, cell_h
+        pitch_x = cell_d + row_gap
         Lz = n_cells * cell_d
-        bb4.metric("Row depth (= n × d)", f"{Lz*1000:.0f} mm")
-        st.caption("Battery-row mode: the 2D bar is one cell's "
-                   "cross-section (d wide, h tall) and the 3D "
-                   "block is EXACTLY the row - d × h × (n·d). "
-                   "The depth field is derived, not typed.")
+        span = (n_rows - 1) * pitch_x + cell_d
+        m1, m2 = st.columns(2)
+        m1.metric("Row depth (= cells × d)",
+                  f"{Lz*1000:.0f} mm")
+        m2.metric("Array span across the width",
+                  f"{span*1000:.0f} mm of {Wt*1000:.0f}")
+        if span > Wt - 0.002:
+            st.error("The rows do not fit: widen the tank, "
+                     "reduce the row count, or shrink the gap.")
+        st.caption("Battery-array mode: the 2D front view shows "
+                   "EVERY row as its own d-wide, h-tall "
+                   "rectangle at the set pitch, and the 3D "
+                   "blocks are exactly the rows - d × h × "
+                   "(cells·d) each. Total heat divides equally "
+                   "between rows; the depth is derived, not "
+                   "typed.")
     else:
+        n_rows, pitch_x = 1, 0.025
         b_w = c4.number_input("Bar width [mm]", 1.0, 120.0, 5.0,
                               0.1, format="%.1f",
                               key="fxb_bw") / 1000
@@ -3202,11 +3233,11 @@ def fea_tab(d, g, fl, cool_df, loop):
              u_fan=u_fan, T_in=T_in,
              heat_mode="battery" if bat_mode else "manual",
              I_cell=I_cell, R0_cell=R0c, R1_cell=R1c,
-             b_w=b_w, b_h=b_h,
+             b_w=b_w, b_h=b_h, n_rows=n_rows, pitch_x=pitch_x,
              n_pipes=(n_pipes if use_pipes else 0),
              d_pipe=d_pipe, pipe_drop=pipe_drop, h_w=h_w,
              T_w=T_w)
-    qv = Q / (b_w * b_h * Lz)
+    qv = Q / (n_rows * b_w * b_h * Lz)
 
     cx1, cx2 = st.columns([1.4, 1])
     with cx1:
@@ -3249,11 +3280,16 @@ def fea_tab(d, g, fl, cool_df, loop):
                                    ayref="y", showarrow=True,
                                    arrowhead=3, arrowwidth=2,
                                    arrowcolor="#0EA5E9")
-        bx0 = Wm / 2 - bwm / 2 + xm
-        fig.add_shape(type="rect", x0=bx0, y0=gm, x1=bx0 + bwm,
-                      y1=gm + bhm,
-                      fillcolor="rgba(250,204,21,.85)",
-                      line=dict(color="#A16207", width=2))
+        pxm = pitch_x * 1000
+        for kri in range(int(n_rows)):
+            roff = (2 * kri + 1 - n_rows) / 2.0 * pxm
+            bx0 = Wm / 2 - bwm / 2 + xm + roff
+            fig.add_shape(type="rect", x0=bx0, y0=gm,
+                          x1=bx0 + bwm, y1=gm + bhm,
+                          fillcolor="rgba(250,204,21,.85)",
+                          line=dict(color="#A16207", width=2))
+        bx0 = Wm / 2 - bwm / 2 + xm + \
+            (n_rows - 1) / 2.0 * pxm
         fig.add_annotation(x=Wm / 2, y=Hm + Hm * 0.07,
                            text=(f"top: T = {Ttop:.0f} °C (fixed)"
                                  if top_fixed else
@@ -3271,12 +3307,16 @@ def fea_tab(d, g, fl, cool_df, loop):
                                  "sides and bottom adiabatic"),
                            showarrow=False,
                            font=dict(size=10, color="#475569"))
-        fig.add_annotation(x=bx0 + bwm / 2, y=gm + bhm / 2,
-                           text="bar", showarrow=False,
-                           font=dict(size=9, color="#713F12"))
+        if n_rows == 1:
+            fig.add_annotation(x=bx0 + bwm / 2, y=gm + bhm / 2,
+                               text="bar", showarrow=False,
+                               font=dict(size=9,
+                                         color="#713F12"))
         fig.add_annotation(x=bx0 + bwm + Wm * 0.02,
                            y=gm + bhm / 2,
-                           text=f"{bwm:.1f} × {bhm:.1f} mm, "
+                           text=(f"{int(n_rows)} rows of " if
+                                 n_rows > 1 else "") +
+                                f"{bwm:.1f} × {bhm:.1f} mm, "
                                 f"{gm:.0f} mm off the floor",
                            showarrow=False, xanchor="left",
                            font=dict(size=9, color="#A16207"))
@@ -3310,8 +3350,8 @@ def fea_tab(d, g, fl, cool_df, loop):
                    "export directly.")
         if fan:
             _fm, _fi = fan_mean_exact(
-                np.array([Ht]), Wt, Ht, b_w, b_h, gap,
-                Q / (b_w * b_h * Lz),
+                np.array([Ht]), Wt, Ht, n_rows * b_w, b_h, gap,
+                Q / (n_rows * b_w * b_h * Lz),
                 km * P["k_oil"], P["rho_oil"], P["cp_oil"], u_fan,
                 T_in)
             st.metric("Exact outlet mean (the anchor)",
@@ -3457,15 +3497,20 @@ def fea_tab(d, g, fl, cool_df, loop):
                 up.name] = (fx_, fy_, fT_)
             continue
         if fan:
-            m = fan_check_field(fx_, fy_, fT_, Wt, Ht, b_w, b_h,
+            m = fan_check_field(fx_, fy_, fT_, Wt, Ht,
+                                n_rows * b_w, b_h,
                                 xc_, gap,
-                                Q / (b_w * b_h * Lz), k_eff,
+                                Q / (n_rows * b_w * b_h * Lz),
+                                k_eff,
                                 P["rho_oil"], P["cp_oil"], u_fan,
                                 T_in)
         else:
-            m = wp3_check_field(fx_, fy_, fT_, Wt, Ht, b_w, b_h,
+            m = wp3_check_field(fx_, fy_, fT_, Wt, Ht,
+                                n_rows * b_w, b_h,
                                 xc_, gap,
-                                Q / (b_w * b_h * Lz), k_eff, Ttop)
+                                Q / (n_rows * b_w * b_h * Lz),
+                                k_eff, Ttop,
+                                series=(n_rows == 1))
         st.session_state.setdefault("fx_fields", {})[up.name] = (
             fx_, fy_, fT_)
         _fchecks.append((up.name, finf, m))
@@ -3564,7 +3609,9 @@ def fea_tab(d, g, fl, cool_df, loop):
                   f"{m['max_out']:.3f} °C")
         wp3_like = (abs(Wt - 0.025) < 1e-4 and
                     abs(Ht - 0.030) < 1e-4 and
-                    abs(a - 0.005) < 1e-4 and
+                    n_rows == 1 and
+                    abs(b_w - 0.005) < 1e-4 and
+                    abs(b_h - 0.005) < 1e-4 and
                     abs(Q - 0.75) < 0.02)
         if wp3_like and abs(km - 1.0) < 1e-6:
             nu = (m["T_peak"] - Ttop) / 0.72
@@ -3574,25 +3621,52 @@ def fea_tab(d, g, fl, cool_df, loop):
                 f"°C - the buoyant circulation is worth a factor "
                 f"of **{nu:.1f}** here. Raise the k-multiplier to "
                 f"about {nu:.1f} and re-export to emulate it.")
-        zmin = float(min(np.nanmin(m["T"]), np.nanmin(m["Ts"])))
-        zmax = float(max(np.nanmax(m["T"]), np.nanmax(m["Ts"])))
-        h1, h2, h3 = st.columns(3)
-        for col, Z, ttl in ((h1, m["T"], "Numerical (COMSOL)"),
-                            (h2, m["Ts"], "Analytical (series)"),
-                            (h3, m["T"] - m["Ts"],
-                             "Difference [°C]")):
-            fg = go.Figure(go.Heatmap(
-                x=m["x"] * 1000, y=m["y"] * 1000, z=Z,
-                colorscale="Turbo" if ttl[0] != "D" else "RdBu",
-                zmin=None if ttl[0] == "D" else zmin,
-                zmax=None if ttl[0] == "D" else zmax,
-                colorbar=dict(thickness=10)))
-            fg.update_layout(height=300, title=dict(text=ttl,
-                             font=dict(size=12), x=0.02),
-                             margin=dict(l=6, r=6, t=28, b=6),
-                             yaxis=dict(scaleanchor="x"))
-            col.plotly_chart(fg, width='stretch',
-                             key=f"fx_hm_{up.name}_{ttl[:4]}")
+        if m["Ts"] is None:
+            st.info("Multi-row array: the single-strip series "
+                    "does not apply, so the verdict above judges "
+                    "the row-mean profile against the EXACT "
+                    "plane-mean (total heated width n·d) - the "
+                    "field and that profile are shown below.")
+            fgn = go.Figure(go.Heatmap(
+                x=m["x"] * 1000, y=m["y"] * 1000, z=m["T"],
+                colorscale="Turbo", colorbar=dict(thickness=10)))
+            fgn.update_layout(height=320,
+                              margin=dict(l=6, r=6, t=28, b=6),
+                              yaxis=dict(scaleanchor="x"),
+                              title=dict(text="Numerical field "
+                                         "(multi-row)",
+                                         font=dict(size=12),
+                                         x=0.02))
+            st.plotly_chart(fgn, width='stretch',
+                            key=f"fx_mr_{up.name}")
+        else:
+            zmin = float(min(np.nanmin(m["T"]),
+                             np.nanmin(m["Ts"])))
+            zmax = float(max(np.nanmax(m["T"]),
+                             np.nanmax(m["Ts"])))
+            h1, h2, h3 = st.columns(3)
+            for col, Z, ttl in ((h1, m["T"],
+                                 "Numerical (COMSOL)"),
+                                (h2, m["Ts"],
+                                 "Analytical (series)"),
+                                (h3, m["T"] - m["Ts"],
+                                 "Difference [°C]")):
+                fg = go.Figure(go.Heatmap(
+                    x=m["x"] * 1000, y=m["y"] * 1000, z=Z,
+                    colorscale="Turbo" if ttl[0] != "D"
+                    else "RdBu",
+                    zmin=None if ttl[0] == "D" else zmin,
+                    zmax=None if ttl[0] == "D" else zmax,
+                    colorbar=dict(thickness=10)))
+                fg.update_layout(height=300,
+                                 title=dict(text=ttl,
+                                            font=dict(size=12),
+                                            x=0.02),
+                                 margin=dict(l=6, r=6, t=28,
+                                             b=6),
+                                 yaxis=dict(scaleanchor="x"))
+                col.plotly_chart(fg, width='stretch',
+                                 key=f"fx_hm_{up.name}_{ttl[:4]}")
         fp = go.Figure()
         fp.add_scatter(x=m["mean_num"], y=m["y"] * 1000,
                        mode="markers", name="numerical row mean",
@@ -4686,6 +4760,31 @@ def smoke():
         'set("h", "h_w")' in _jp2 and '"b_w", "b_h"' in _jp2
     assert _jp3.count('"Cylinder"') == 3 and \
         '"axistype", "y"' in _jp3 and "BALANCE" in _jp3
+    # multi-row array: every row its own rectangle/block; heat
+    # and mean-profile expressions use the TOTAL heated width
+    _pr = dict(_pb, b_w=0.021, b_h=0.070, n_rows=4,
+               pitch_x=0.032)
+    _jr2 = _FX.comsol_basic_2d(dict(_pr, cls="iplX"))
+    _jr3 = _FX.comsol_basic_3d(dict(_pr, cls="iplX"))
+    assert '"r_b4"' in _jr2 and '"r_b5"' not in _jr2
+    assert '"n_rows_", "4"' in _jr2 and \
+        "q_v*W_bars/W_tank" in _jr2 and \
+        "Q_cell/(W_bars*b_h*L_z)" in _jr2
+    assert '"blk_b4"' in _jr3 and "(3/2.0)*pitch_x" in _jr3
+    _j1 = _FX.comsol_basic_2d(dict(_pb, cls="iplX"))
+    assert '"r_b1"' in _j1 and '"r_b2"' not in _j1
+    # mean-profile identity: 4 rows at width d == one bar at 4d
+    _T4, _i4 = fan_mean_exact(np.linspace(0, 0.03, 50), 0.15,
+                              0.03, 4 * 0.021, 0.012, 0.008,
+                              5e4, 0.6, 997.0, 4180.0, 0.001,
+                              25.0)
+    _T1, _i1 = fan_mean_exact(np.linspace(0, 0.03, 50), 0.15,
+                              0.03, 0.084, 0.012, 0.008, 5e4,
+                              0.6, 997.0, 4180.0, 0.001, 25.0)
+    assert np.allclose(_T4, _T1) and \
+        abs(_i4["T_out"] - _i1["T_out"]) < 1e-12
+    print("multi-row: exporter markers + total-width mean "
+          "identity OK")
     # rectangular fan analytics: closed form vs FD, bw != bh
     def _fdr(WW, HH, bw_, bh_, gg, qq, kk, rr, cc, uu, Ti,
              N=3000):

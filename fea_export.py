@@ -37,6 +37,46 @@ DISCLAIMER = (
 
 
 
+def _rows_geom_2d(P):
+    n = int(P.get("n_rows", 1) or 1)
+    out = ("    // the batteries: each row of cells seen end-on is "
+           "one d-wide,\n    // h-tall rectangle; rows repeat "
+           "across the width at the set pitch\n")
+    for k in range(1, n + 1):
+        off = f"({2*k - 1 - n}/2.0)*pitch_x"
+        out += (f'    model.component("comp1").geom("geom1")'
+                f'.create("r_b{k}", "Rectangle");\n'
+                f'    model.component("comp1").geom("geom1")'
+                f'.feature("r_b{k}")\n'
+                f'        .set("size", new String[]'
+                f'{{"b_w", "b_h"}});\n'
+                f'    model.component("comp1").geom("geom1")'
+                f'.feature("r_b{k}")\n'
+                f'        .set("pos", new String[]'
+                f'{{"W_tank/2 - b_w/2 + x_off + {off}",\n'
+                f'                                 "gap_bot"}});\n')
+    return out
+
+
+def _rows_geom_3d(P):
+    n = int(P.get("n_rows", 1) or 1)
+    out = ""
+    for k in range(1, n + 1):
+        off = f"({2*k - 1 - n}/2.0)*pitch_x"
+        out += (f'    model.component("comp1").geom("geom1")'
+                f'.create("blk_b{k}", "Block");\n'
+                f'    model.component("comp1").geom("geom1")'
+                f'.feature("blk_b{k}")\n'
+                f'        .set("size", new String[]'
+                f'{{"b_w", "L_z", "b_h"}});\n'
+                f'    model.component("comp1").geom("geom1")'
+                f'.feature("blk_b{k}")\n'
+                f'        .set("pos", new String[]'
+                f'{{"W_tank/2 - b_w/2 + x_off + {off}", "0",\n'
+                f'                                 "gap_bot"}});\n')
+    return out
+
+
 def _pipe_prm_rows(P):
     if not P.get("n_pipes"):
         return []
@@ -339,13 +379,19 @@ public class {cls} {{
          "bar width (x) - one cell diameter in battery-row mode"),
         ("b_h", f"{P.get('b_h', P['a_cell'])}[m]",
          "bar height - the cell height in battery-row mode"),
+        ("n_rows_", f"{int(P.get('n_rows', 1) or 1)}",
+         "number of battery rows across the width"),
+        ("pitch_x", f"{P.get('pitch_x', 0.025)}[m]",
+         "row centre-to-centre spacing across the width"),
+        ("W_bars", "n_rows_*b_w",
+         "total heated width (all rows)"),
         ("x_off", f"{P['x_off']}[m]",
          "battery centre offset from tank centreline"),
         ("gap_bot", f"{P['gap_bot']}[m]",
          "battery bottom above the tank floor"),
         ("L_z", f"{P['L_z']}[m]", "depth into the plane (for Q only)"),
                 *_qcell_rows(P),
-        ("q_v", "Q_cell/(b_w*b_h*L_z)", "volumetric heat in the "
+        ("q_v", "Q_cell/(W_bars*b_h*L_z)", "volumetric heat in the "
          "battery"),
         ("k_bat", f"{P['k_bat']}[W/(m*K)]",
          "battery in-plane conductivity"),
@@ -371,15 +417,15 @@ public class {cls} {{
          "fan mode: inlet oil temperature at the floor"),
         ("P_adv", "rho_oil*cp_oil*u_fan/(k_mult*k_oil)",
          "fan mode: advection parameter [1/m]"),
-        ("m_slope", "q_v*b_w/W_tank/(rho_oil*cp_oil*u_fan)",
+        ("m_slope", "q_v*W_bars/W_tank/(rho_oil*cp_oil*u_fan)",
          "fan mode: mean-profile slope in the bar band"),
         ("Tout_pred",
          "T_in + m_slope*b_h + (m_slope/P_adv)*"
          "(exp(-P_adv*(gap_bot+b_h)) - exp(-P_adv*gap_bot))",
          "fan mode: EXACT outlet mean temperature (the anchor)"),
         *_pipe_prm_rows(P),
-        ("A_cell", "b_w*b_h", "battery cross-section"),
-        ("A_oil", "W_tank*H_tank - b_w*b_h", "liquid cross-section"),
+        ("A_cell", "W_bars*b_h", "battery cross-section, all rows"),
+        ("A_oil", "W_tank*H_tank - W_bars*b_h", "liquid cross-section"),
         ("dTdt_pred",
          "Q_cell/L_z/(rho_bat*cp_bat*A_cell + rho_oil*cp_oil*A_oil)",
          "exact adiabatic heating slope - the correctness anchor"),
@@ -473,22 +519,15 @@ public class {cls} {{
     model.component("comp1").geom("geom1").create("r1", "Rectangle");
     model.component("comp1").geom("geom1").feature("r1")
         .set("size", new String[]{"W_tank", "H_tank"});
-    // the battery: a square inside it (Form Union splits the domains)
-    model.component("comp1").geom("geom1").create("r2", "Rectangle");
-    model.component("comp1").geom("geom1").feature("r2")
-        .set("size", new String[]{"b_w", "b_h"});
-    model.component("comp1").geom("geom1").feature("r2")
-        .set("pos", new String[]{"W_tank/2 - b_w/2 + x_off",
-                                 "gap_bot"});
-__PIPEGEOM__    // named selection tightly around the battery domain
+__ROWS2D____PIPEGEOM__    // named selection tightly around the battery domain
     model.component("comp1").geom("geom1").create("selCell",
         "BoxSelection");
     model.component("comp1").geom("geom1").feature("selCell")
         .set("entitydim", 2);
     model.component("comp1").geom("geom1").feature("selCell")
-        .set("xmin", "W_tank/2 - b_w/2 + x_off - 1e-6");
+        .set("xmin", "W_tank/2 + x_off - (n_rows_-1)/2.0*pitch_x - b_w/2 - 1e-6");
     model.component("comp1").geom("geom1").feature("selCell")
-        .set("xmax", "W_tank/2 + b_w/2 + x_off + 1e-6");
+        .set("xmax", "W_tank/2 + x_off + (n_rows_-1)/2.0*pitch_x + b_w/2 + 1e-6");
     model.component("comp1").geom("geom1").feature("selCell")
         .set("ymin", "gap_bot - 1e-6");
     model.component("comp1").geom("geom1").feature("selCell")
@@ -635,6 +674,7 @@ __PG2__
     s = (s.replace("__EXEC__", execs)
          .replace("__TOPBC__", topbc)
          .replace("__FAN__", fanblk)
+         .replace("__ROWS2D__", _rows_geom_2d(P))
          .replace("__PIPEGEOM__", _pipes_geom_2d(P))
          .replace("__PIPEPHY__", _pipes_physics(P, 2))
          .replace("__PIPECPL__", _pipes_cpl(P, 2))
@@ -661,7 +701,7 @@ def comsol_basic_3d(P):
         top_fixed = False
     steady = bool(P.get("steady", top_fixed or fan))
     build_only = bool(P.get("build_only", False))
-    qv = P["Q_cell"] / (P.get("b_w", P["a_cell"]) * P.get("b_h", P["a_cell"]) * P["L_z"])
+    qv = P["Q_cell"] / (int(P.get("n_rows", 1) or 1) * P.get("b_w", P["a_cell"]) * P.get("b_h", P["a_cell"]) * P["L_z"])
     s = f"""/*
  * BASIC MODULE in 3D - the WP3 section extruded {P['L_z']*1000:.0f} mm.
  * {DISCLAIMER}
@@ -699,10 +739,16 @@ public class {cls} {{
          "bar width (x)"),
         ("b_h", f"{P.get('b_h', P['a_cell'])}[m]",
          "bar height (z)"),
+        ("n_rows_", f"{int(P.get('n_rows', 1) or 1)}",
+         "number of battery rows across the width"),
+        ("pitch_x", f"{P.get('pitch_x', 0.025)}[m]",
+         "row centre-to-centre spacing"),
+        ("W_bars", "n_rows_*b_w",
+         "total heated width (all rows)"),
         ("x_off", f"{P['x_off']}[m]", "bar offset from centreline"),
         ("gap_bot", f"{P['gap_bot']}[m]", "bar bottom above floor"),
         *_qcell_rows(P),
-        ("q_v", "Q_cell/(b_w*b_h*L_z)", "volumetric heat"),
+        ("q_v", "Q_cell/(W_bars*b_h*L_z)", "volumetric heat"),
         ("k_bat", f"{P['k_bat']}[W/(m*K)]", "bar conductivity"),
         ("rho_bat", f"{P['rho_bat']}[kg/m^3]", "bar density"),
         ("cp_bat", f"{P['cp_bat']}[J/(kg*K)]", "bar cp"),
@@ -722,7 +768,7 @@ public class {cls} {{
          "fan mode: inlet oil temperature at the floor"),
         ("P_adv", "rho_oil*cp_oil*u_fan/(k_mult*k_oil)",
          "fan mode: advection parameter [1/m]"),
-        ("m_slope", "q_v*b_w/W_tank/(rho_oil*cp_oil*u_fan)",
+        ("m_slope", "q_v*W_bars/W_tank/(rho_oil*cp_oil*u_fan)",
          "fan mode: mean-profile slope in the bar band"),
         ("Tout_pred",
          "T_in + m_slope*b_h + (m_slope/P_adv)*"
@@ -730,8 +776,8 @@ public class {cls} {{
          "fan mode: EXACT outlet mean temperature (the anchor)"),
         *_pipe_prm_rows(P),
         ("dTdt_pred",
-         "Q_cell/(rho_bat*cp_bat*b_w*b_h*L_z + "
-         "rho_oil*cp_oil*(W_tank*H_tank - b_w*b_h)*L_z)",
+         "Q_cell/(rho_bat*cp_bat*W_bars*b_h*L_z + "
+         "rho_oil*cp_oil*(W_tank*H_tank - W_bars*b_h)*L_z)",
          "exact sealed heating slope"),
     ]
     for k_, v_, d_ in prm:
@@ -742,20 +788,15 @@ public class {cls} {{
     model.component("comp1").geom("geom1").create("blk1", "Block");
     model.component("comp1").geom("geom1").feature("blk1")
         .set("size", new String[]{"W_tank", "L_z", "H_tank"});
-    model.component("comp1").geom("geom1").create("blk2", "Block");
-    model.component("comp1").geom("geom1").feature("blk2")
-        .set("size", new String[]{"b_w", "L_z", "b_h"});
-    model.component("comp1").geom("geom1").feature("blk2")
-        .set("pos", new String[]{"W_tank/2 - b_w/2 + x_off", "0",
-                                 "gap_bot"});
+""" + _rows_geom_3d(P) + """
 """ + _pipes_geom_3d(P) + """    model.component("comp1").geom("geom1").create("selCell",
         "BoxSelection");
     model.component("comp1").geom("geom1").feature("selCell")
         .set("entitydim", 3);
     model.component("comp1").geom("geom1").feature("selCell")
-        .set("xmin", "W_tank/2 - b_w/2 + x_off - 1e-6");
+        .set("xmin", "W_tank/2 + x_off - (n_rows_-1)/2.0*pitch_x - b_w/2 - 1e-6");
     model.component("comp1").geom("geom1").feature("selCell")
-        .set("xmax", "W_tank/2 + b_w/2 + x_off + 1e-6");
+        .set("xmax", "W_tank/2 + x_off + (n_rows_-1)/2.0*pitch_x + b_w/2 + 1e-6");
     model.component("comp1").geom("geom1").feature("selCell")
         .set("zmin", "gap_bot - 1e-6");
     model.component("comp1").geom("geom1").feature("selCell")

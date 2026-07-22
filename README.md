@@ -587,6 +587,14 @@ thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
 
+## v10.25
+
+The batteries themselves, even in 2D - and your run log decoded.
+
+- Battery-array geometry: battery mode now takes rows-across-the-width, cells-per-row, cell diameter and height, and the edge gap between rows. The 2D front view draws EVERY row as its own d-wide, h-tall rectangle at the set pitch (with a does-it-fit check against the tank width), and the 3D model builds the same rows as blocks, each exactly d x h x (cells*d). In the exported COMSOL files each row is its own Rectangle/Block (r_b1..n, blk_b1..n) positioned by a pitch_x parameter; one tight box selection captures all of them (the connected oil domain is never fully inside the band, so it is excluded automatically); heat, areas and the fan mean-profile expressions use the new W_bars = n_rows*b_w.
+- Anchors stay honest: the plane-mean closed forms are EXACT for the array with the total heated width (proved in smoke: four rows of d reproduce one bar of 4d to machine precision), so the checker judges multi-row runs by the row-mean profile against the exact mean; the single-strip series is skipped with a note instead of being silently misapplied. The mixed 4-rows + 3-pipes fan case compiles clean in both dimensions.
+- The run log, decoded: the 3D fan model SOLVED (stationary, evaluations exported) - that run confirms ConvectiveOutflow and the 3-vector velocity on real 6.4. The later 3D failure was a shell race: `cmd1 & cmd2` runs both simultaneously; use `&&`. The 2D error shows the OLD two-component velocity [[0],[u_fan]] byte-for-byte - a stale ipl2d.java in Downloads; re-download from this version and the line reads {"0","u_fan","0"}. The license -15 was a transient FlexNet server drop that self-recovered.
+
 ## v10.24
 
 Preview rendering fixed. The "What the FEA will solve" drawing is a shapes-only figure, and Plotly autoranges those unreliably when the axes carry scaleanchor - on wide windows the fan-mode preview collapsed to an empty tank with one stray arrow line. An invisible corner-pinning trace now sets the view, explicit ranges are given, and constrain="domain" letterboxes the true 25 x 30 aspect inside wide columns instead of cropping it. Verified by rendering the figure to PNG headlessly (fan and pipes variants) before and after.
