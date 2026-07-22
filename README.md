@@ -587,6 +587,14 @@ thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
 
+## v10.27
+
+Stale files can no longer masquerade, and your screenshot delivered the last API confirmations.
+
+- Version stamp everywhere: every generated ipl2d/ipl3d header now carries "(app vX.Y)", and the _settings.txt echo header carries app=vX.Y (the parser reads it and shows it in the basis line). One glance - or `grep app ipl3d.java` - settles which app made a file. The four-slab geometry in the screenshot is definitively v10.25 output (v10.26+ battery mode emits one cylinder per cell; its custom fallback is a single block, never four): the shipped v10.26 zip was re-verified from a fresh unzip to emit 35 cylinders for a 4x8 + 3-pipe pack.
+- Confirmed on real 6.4 by the same screenshot: Cylinder, axistype "y" and Difference all built (the pipes are true subtracted channels along the depth) - the pipe machinery and, by the same feature, the vertical cell cylinders carry no remaining API risk.
+- ipl_pack_demo.zip: a ready-to-run 3 x 4 pack of 21700s (4 mm gaps, two 10 mm pipes, fan at 0.5 mm/s, auto-sized 134 x 134 x 100 mm tank, 6 W total) - compile-checked, stamped, with its settings echo; the same two commands run it as-is.
+
 ## v10.26
 
 Real cells in 3D, a self-configuring analytical link, intelligent sizing, and the benchmark button gone.

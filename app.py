@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.26"
+APP_VERSION = "v10.27"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -2400,12 +2400,14 @@ def parse_run_settings(text):
     flow/dim/cyl flags from the header."""
     import re as _re
     out = {}
-    hdr = _re.search(r"ipl-settings v1 cls=(\S+) dim=(\d) "
-                     r"flow=(\S+) cyl=(\d)", text)
+    hdr = _re.search(r"ipl-settings v1 cls=(\S+) dim=(\d)"
+                     r"(?: app=(\S+))? flow=(\S+) cyl=(\d)",
+                     text)
     if hdr:
         out["_cls"], out["_dim"] = hdr.group(1), int(hdr.group(2))
-        out["_flow"], out["_cyl"] = hdr.group(3), \
-            bool(int(hdr.group(4)))
+        out["_app"] = hdr.group(3) or "?"
+        out["_flow"], out["_cyl"] = hdr.group(4), \
+            bool(int(hdr.group(5)))
         for ln in text.splitlines():
             mm = _re.match(r"([A-Za-z_][A-Za-z0-9_]*)=(.+)$",
                            ln.strip())
@@ -3311,6 +3313,7 @@ def fea_tab(d, g, fl, cool_df, loop):
              b_w=b_w, b_h=b_h, n_rows=n_rows, pitch_x=pitch_x,
              n_cells=n_cells, pitch_y=pitch_y,
              cyl_cells=gmode.startswith("Battery"),
+             app_ver=APP_VERSION,
              n_pipes=(n_pipes if use_pipes else 0),
              d_pipe=d_pipe, pipe_drop=pipe_drop, h_w=h_w,
              T_w=T_w)
@@ -4917,12 +4920,15 @@ def smoke():
         "Q_cell/(W_bars*b_h*L_z)" in _jr2
     _jc3 = _FX.comsol_basic_3d(dict(_pr, cls="iplX",
                                     cyl_cells=True, n_cells=6,
-                                    pitch_y=0.026))
+                                    pitch_y=0.026,
+                                    app_ver=APP_VERSION))
     assert _jc3.count('"Cylinder"') == 4 * 6 and \
         '"cb4_6"' in _jc3 and 'set("r", "b_w/2")' in _jc3
     assert '"V_bat", "n_tot_*pi*(b_w/2)^2*b_h"' in _jc3 and \
         "Q_cell/(b_h*W_tank*L_z)" in _jc3 and \
-        "iplX_settings.txt" in _jc3 and "Q_eval=" in _jc3
+        "iplX_settings.txt" in _jc3 and "Q_eval=" in _jc3 \
+        and f"app {APP_VERSION}" in _jc3 and \
+        f"app={APP_VERSION}" in _jc3
     assert '"blk2"' in _jr3 and '"cb1_1"' not in _jr3
     _j1 = _FX.comsol_basic_2d(dict(_pb, cls="iplX"))
     assert '"r_b1"' in _j1 and '"r_b2"' not in _j1

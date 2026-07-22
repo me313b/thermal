@@ -108,7 +108,7 @@ def _settings_java(P, prm, cls):
     lines = [f'    java.io.PrintWriter pw_ = new '
              f'java.io.PrintWriter("{cls}_settings.txt");',
              f'    pw_.println("% ipl-settings v1 cls={cls} '
-             f'dim={P.get("_dim", 2)} '
+             f'dim={P.get("_dim", 2)} app={P.get("app_ver", "?")} '
              f'flow={P.get("flow_mode", "top" if P.get("top_fixed", True) else "sealed")} '
              f'cyl={1 if P.get("cyl_cells") else 0}");']
     for k, v, _ in prm:
@@ -378,7 +378,7 @@ def comsol_basic_2d(P):
     steady = bool(P.get("steady", top_fixed or fan))
     build_only = bool(P.get("build_only", False))
     s = f"""/*
- * BASIC MODULE - a heat bar in a liquid tank (plane 2D), matched to
+ * BASIC MODULE (app {P.get("app_ver", "?")}) - a heat bar in a liquid tank (plane 2D), matched to
  * the ODYSSEV-WP3 Fluent report.
  * {DISCLAIMER}
  *
@@ -753,7 +753,7 @@ def comsol_basic_3d(P):
     build_only = bool(P.get("build_only", False))
     qv = P["Q_cell"] / (int(P.get("n_rows", 1) or 1) * P.get("b_w", P["a_cell"]) * P.get("b_h", P["a_cell"]) * P["L_z"])
     s = f"""/*
- * BASIC MODULE in 3D - the WP3 section extruded {P['L_z']*1000:.0f} mm.
+ * BASIC MODULE in 3D (app {P.get("app_ver", "?")}) - the pack section {P['L_z']*1000:.0f} mm.
  * {DISCLAIMER}
  *
  * Tank {P['W_tank']*1000:.0f} x {P['L_z']*1000:.0f} x {P['H_tank']*1000:.0f} mm (W x depth x H);
