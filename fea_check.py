@@ -58,6 +58,7 @@ public class Model {
   public Model export(Object... a) { return this; }
   public Model run() { return this; }
   public Model setResult() { return this; }
+  public Model saveFile(String s) throws java.io.IOException { return this; }
   public Model set(String[] v) { return this; }
   public Model set(int[] v) { return this; }
   public Model set(double[] v) { return this; }

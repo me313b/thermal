@@ -587,6 +587,14 @@ thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
 
+## v10.28
+
+The pack solved on real 6.4 - and the one failing step is rebuilt through the sanctioned route.
+
+- The run log confirmed the whole geometry chain at scale: 32 cell cylinders + 3 pipe cylinders built, Difference subtracted the pipes, 238k tets meshed, 334,413 DOFs converged in three Newton iterations (10 s). The only error was the settings echo: COMSOL's Security preference blocks raw java.io writes from model classes. The echo now uses COMSOL's own model.param().saveFile() instead - same sanctioned route as every other export - and the run's meta travels as ordinary parameters (ipl_dim, ipl_fan, ipl_top, ipl_cyl, and a numeric Q_eval, with the app version in ipl_dim's description). The parser reads the saveFile format, the .java (meta-aware), and the old echo alike; round-tripped in smoke.
+- The log's "accurate boundary fluxes failed" warning degrades ntflux-based rows, so pipe configurations gain a second, robust row: pipe heat via the film law intPipe(h_w*(T-T_w)), warning-proof by construction; the BALANCE row keeps ntflux and the two can be compared.
+- Field and summary exports run BEFORE the settings step, so the txt files from the failed-echo runs are valid and uploadable as-is; the .java doubles as the settings basis for them.
+
 ## v10.27
 
 Stale files can no longer masquerade, and your screenshot delivered the last API confirmations.

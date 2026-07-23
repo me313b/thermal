@@ -100,29 +100,38 @@ def _rows_geom_3d(P):
     return out
 
 
-def _settings_java(P, prm, cls):
-    """Static echo of the run's parameters to {cls}_settings.txt -
-    plain java.io, no COMSOL API risk. The app reads this file (or
-    the .java itself) to configure the analytical model from the
-    RUN, not from the current sliders."""
-    lines = [f'    java.io.PrintWriter pw_ = new '
-             f'java.io.PrintWriter("{cls}_settings.txt");',
-             f'    pw_.println("% ipl-settings v1 cls={cls} '
-             f'dim={P.get("_dim", 2)} app={P.get("app_ver", "?")} '
-             f'flow={P.get("flow_mode", "top" if P.get("top_fixed", True) else "sealed")} '
-             f'cyl={1 if P.get("cyl_cells") else 0}");']
-    for k, v, _ in prm:
-        vv = str(v).replace('"', '')
-        lines.append(f'    pw_.println("{k}={vv}");')
+def _meta_rows(P, dim):
+    fm = P.get("flow_mode", "top" if P.get("top_fixed", True)
+               else "sealed")
     if P.get("heat_mode") == "battery":
         qn = float(P.get("I_cell", 0.0)) ** 2 * (
             float(P.get("R0_cell", 0.0)) +
             float(P.get("R1_cell", 0.0)))
     else:
         qn = float(P.get("Q_cell", 0.0))
-    lines.append(f'    pw_.println("Q_eval={qn}");')
-    lines.append('    pw_.close();')
-    return "\n".join(lines) + "\n"
+    return [
+        ("ipl_dim", f"{dim}",
+         f"IPL meta: model dimension | app="
+         f"{P.get('app_ver', '?')}"),
+        ("ipl_fan", "1" if fm == "fan" else "0",
+         "IPL meta: 1 = fan upflow configuration"),
+        ("ipl_top", "1" if fm == "top" else "0",
+         "IPL meta: 1 = fixed-temperature lid"),
+        ("ipl_cyl", "1" if P.get("cyl_cells") else "0",
+         "IPL meta: 1 = cells are real cylinders"),
+        ("Q_eval", f"{qn}[W]",
+         "IPL meta: the evaluated total heat (numeric even in "
+         "battery-current mode)"),
+    ]
+
+
+def _settings_java(P, prm, cls):
+    """Parameter echo via COMSOL's own API - raw java.io writes
+    are blocked by the default Security preference (as a real 6.4
+    run proved), but model.param().saveFile() goes through the
+    sanctioned route like every other export."""
+    return (f'    model.param().saveFile("{cls}_settings.txt");'
+            "\n")
 
 
 def _pipe_prm_rows(P):
@@ -298,7 +307,10 @@ def _eval_rows(P, dim, top_fixed, fan):
                  (adv, U, "advected out of the top")]
         if pipes:
             rows += [("intPipe(ht.ntflux)", U,
-                      "heat into the water pipes"),
+                      "heat into the water pipes (ntflux)"),
+                     ("intPipe(h_w*(T - T_w))", U,
+                      "pipe heat via the film law - robust when "
+                      "the accurate-flux warning appears"),
                      ("intBot(ht.ntflux)", U,
                       "conductive leak out of the inlet"),
                      (f"Q_cell{per} - ({adv}) - "
@@ -316,7 +328,10 @@ def _eval_rows(P, dim, top_fixed, fan):
                   "heat out of the fixed top")]
         if pipes:
             rows += [("intPipe(ht.ntflux)", U,
-                      "heat into the water pipes"),
+                      "heat into the water pipes (ntflux)"),
+                     ("intPipe(h_w*(T - T_w))", U,
+                      "pipe heat via the film law - robust when "
+                      "the accurate-flux warning appears"),
                      (f"intTop(ht.ntflux) + intPipe(ht.ntflux)"
                       f" - Q_cell{per}", U,
                       "BALANCE - must be ~0")]
@@ -439,6 +454,7 @@ public class {cls} {{
          "battery bottom above the tank floor"),
         ("L_z", f"{P['L_z']}[m]", "depth into the plane (for Q only)"),
                 *_qcell_rows(P),
+        *_meta_rows(P, 2),
         ("q_v", "Q_cell/(W_bars*b_h*L_z)", "volumetric heat in the "
          "battery"),
         ("k_bat", f"{P['k_bat']}[W/(m*K)]",
@@ -806,6 +822,7 @@ public class {cls} {{
         ("x_off", f"{P['x_off']}[m]", "bar offset from centreline"),
         ("gap_bot", f"{P['gap_bot']}[m]", "bar bottom above floor"),
         *_qcell_rows(P),
+        *_meta_rows(P, 3),
         ("q_v", "Q_cell/V_bat", "volumetric heat"),
         ("k_bat", f"{P['k_bat']}[W/(m*K)]", "bar conductivity"),
         ("rho_bat", f"{P['rho_bat']}[kg/m^3]", "bar density"),

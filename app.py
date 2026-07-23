@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.27"
+APP_VERSION = "v10.28"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -2418,6 +2418,30 @@ def parse_run_settings(text):
                 except ValueError:
                     out[mm.group(1) + "_expr"] = v
         return out
+    # COMSOL's param().saveFile format: name value "description"
+    rows = _re.findall(
+        r'^([A-Za-z_][A-Za-z0-9_]*)\s+"?([^"\s][^"]*?)"?'
+        r'(?:\s+"([^"]*)")?\s*$', text, _re.M)
+    vals = {}
+    descs = {}
+    for k, v, dsc in rows:
+        vv = v.split("[")[0].strip()
+        try:
+            vals[k] = float(vv)
+        except ValueError:
+            vals[k + "_expr"] = vv
+        if dsc:
+            descs[k] = dsc
+    if "ipl_dim" in vals and "W_tank" in vals:
+        out = vals
+        out["_dim"] = int(vals["ipl_dim"])
+        out["_flow"] = ("fan" if vals.get("ipl_fan") else
+                        ("top" if vals.get("ipl_top")
+                         else "sealed"))
+        out["_cyl"] = bool(vals.get("ipl_cyl"))
+        mm = _re.search(r"app=(\S+)", descs.get("ipl_dim", ""))
+        out["_app"] = mm.group(1) if mm else "?"
+        return out
     # a generated .java: harvest param().set pairs
     for k, v in _re.findall(
             r'param\(\)\.set\("([A-Za-z_][A-Za-z0-9_]*)",\s*'
@@ -2428,6 +2452,13 @@ def parse_run_settings(text):
         except ValueError:
             out[k + "_expr"] = vv
     if "W_tank" in out:
+        if "ipl_dim" in out:
+            out["_dim"] = int(out["ipl_dim"])
+            out["_flow"] = ("fan" if out.get("ipl_fan") else
+                            ("top" if out.get("ipl_top")
+                             else "sealed"))
+            out["_cyl"] = bool(out.get("ipl_cyl"))
+            return out
         out["_dim"] = 3 if "L_z" in out and \
             'regulargridz3' in text else 2
         out["_flow"] = ("fan" if "FluidHeatTransferModel" in text
@@ -4926,7 +4957,7 @@ def smoke():
         '"cb4_6"' in _jc3 and 'set("r", "b_w/2")' in _jc3
     assert '"V_bat", "n_tot_*pi*(b_w/2)^2*b_h"' in _jc3 and \
         "Q_cell/(b_h*W_tank*L_z)" in _jc3 and \
-        "iplX_settings.txt" in _jc3 and "Q_eval=" in _jc3 \
+        "iplX_settings.txt" in _jc3 and '"Q_eval"' in _jc3 \
         and f"app {APP_VERSION}" in _jc3 and \
         f"app={APP_VERSION}" in _jc3
     assert '"blk2"' in _jr3 and '"cb1_1"' not in _jr3
@@ -4943,12 +4974,21 @@ def smoke():
     assert np.allclose(_T4, _T1) and \
         abs(_i4["T_out"] - _i1["T_out"]) < 1e-12
     import re as _re
-    _lines = _re.findall(r'pw_\.println\("([^"]*)"\);', _jc3)
-    _S = parse_run_settings("\n".join(_lines))
+    assert 'param().saveFile("iplX_settings.txt")' in _jc3 and \
+        "pw_.println" not in _jc3
+    _prows = _re.findall(
+        r'param\(\)\.set\("([^"]+)", "([^"]+)", "([^"]+)"\);',
+        _jc3)
+    _stxt = "\n".join(f'{k} {v} "{d}"' for k, v, d in _prows)
+    _S = parse_run_settings(_stxt)
     assert _S["_dim"] == 3 and _S["_cyl"] and \
-        _S["n_cells_"] == 6 and "Q_eval" in _S
+        _S["_flow"] == "top" and _S["n_cells_"] == 6
+    assert abs(_S["Q_eval"] - _pb["Q_cell"]) < 1e-9
+    assert _S["_app"] == APP_VERSION
     _S2 = parse_run_settings(_jc3)
-    assert _S2["_flow"] in ("top", "fan", "sealed")
+    assert _S2["_dim"] == 3 and _S2["_cyl"]
+    assert "film law" in _FX.comsol_basic_2d(
+        dict(_pp, cls="iplX"))
     print("multi-row: exporter markers, total-width mean "
           "identity, settings echo round-trip OK")
     # rectangular fan analytics: closed form vs FD, bw != bh
