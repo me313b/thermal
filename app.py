@@ -19,7 +19,7 @@
 
 import os, math, contextlib, json
 
-APP_VERSION = "v10.28"
+APP_VERSION = "v10.29"
 from pathlib import Path
 _APPDIR = Path(__file__).resolve().parent
 import json
@@ -4991,6 +4991,31 @@ def smoke():
         dict(_pp, cls="iplX"))
     print("multi-row: exporter markers, total-width mean "
           "identity, settings echo round-trip OK")
+    # ---- decide: CB film, capability, costs, verdict, export
+    import decide as _DCk
+    _flk = dict(name="ester", k=0.144, rho=960.0, cp=1900.0,
+                nu25=40.0, B=0.0)
+    _hk, _Rek, _Prk = _DCk.h_crossflow_cb(_flk, 0.03, 0.010,
+                                          40.0)
+    assert 150 < _hk < 300 and _Prk > 300
+    _capk, _ = _DCk.bank_capability(_hk, 0.010, 0.300, 3, 8.0)
+    _Lnk, _ = _DCk.tube_needed(500.0, _hk, 0.010, 8.0)
+    assert 8 < _Lnk < 14 and _capk < 100
+    _sck = _DCk.system_costs(400, 4.5, 18.0, 12.0, _Lnk, 500.0,
+                             dict(_DCk.COST_DEFAULTS))
+    _vdk = _DCk.verdicts(500.0, _capk, _sck, 8.0)
+    assert _vdk["chosen"] == "B" and 5 < _vdk["oil_share"] < 12
+    _vdk2 = _DCk.verdicts(40.0, _capk, _sck, 8.0)
+    assert _vdk2["chosen"] == "A"
+    _mdk = _DCk.decision_md(
+        dict(n_cells=400, q_cell=1.25, Q=500, dT=8, u_fan=0.03,
+             D=0.01, oil_L=18, oil_price=12),
+        dict(h=_hk, Re=_Rek, Pr=_Prk, cap_A=_capk, L_need=_Lnk),
+        _sck, _vdk)
+    assert "Chosen: Setup B" in _mdk
+    print(f"decide: CB h={_hk:.0f} W/m2K, bank {_capk:.0f} W, "
+          f"needs {_Lnk:.1f} m, oil {_vdk['oil_share']:.1f}%, "
+          "verdict logic + md export OK")
     # rectangular fan analytics: closed form vs FD, bw != bh
     def _fdr(WW, HH, bw_, bh_, gg, qq, kk, rr, cc, uu, Ti,
              N=3000):
@@ -5961,7 +5986,7 @@ def main():
     tabs = st.tabs(["Design", "Duty", "Results", "Cockpit", "Zones",
                     "Improve", "Ideas", "Safety", "Compare",
                     "Learn", "Cases", "FEA", "Validate", "System",
-                    "Report", "Battery"])
+                    "Report", "Battery", "Decide"])
 
     with tabs[0]:
         colL, colR = st.columns([1.15, 1], gap="large")
@@ -7521,6 +7546,23 @@ f"<div class='kpi'><div class='l'>Design status - {APP_VERSION}</div>"
 
     with tabs[15]:
         battery_tab()
+
+    with tabs[16]:
+        import decide as _DC
+        _fx = st.session_state.get("fxb_fl")
+        try:
+            if _fx and (cool_df["name"] == _fx).any():
+                _row = cool_df[cool_df["name"] == _fx].iloc[0]
+            else:
+                _di = cool_df[cool_df["dielectric"] == True]
+                _row = (_di.iloc[0] if len(_di)
+                        else cool_df.iloc[0])
+            _dfl = fluid_dict(_row)
+        except Exception:
+            _dfl = dict(name="Synthetic ester (typical)",
+                        k=0.144, rho=960.0, cp=1900.0,
+                        nu25=40.0, B=0.0)
+        _DC.decide_tab(st, go, _dfl, st.session_state)
 
     # ---------------- Validate and tune ---------------- #
     with tabs[10]:

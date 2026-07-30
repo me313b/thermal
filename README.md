@@ -587,6 +587,15 @@ thermosiphon; plate thickness and plate contact appear only for the
 serpentine mode). That behaviour is retained and can be extended to more
 parameters on request.
 
+## v10.29
+
+The Decide tab: the cooling-architecture question answered as an application, wired to the design itself.
+
+- New "Decide" tab (also runnable standalone: streamlit run decide.py). It compares Setup A (this project: internal water-pipe bank + submerged fans) against Setup B (pumped oil to an external plate HX) for the design CURRENTLY in the app: cell count and pitches prefill from the FEA array, per-cell heat from the battery model at the set current (source named on screen), fan speed and pipe size from the FEA inputs, the fluid from the FEA selection, and the oil inventory per cell from the auto-sized tank scale. Every prefilled value is an editable assumption; hardware unit costs open under a checkbox.
+- Physics, not a guessed film: the tube-bank coefficient is Churchill-Bernstein at your fan speed, pipe OD and oil temperature (viscosity from the coolant table's nu25 and B), shown with Re and Pr. The page reports what the INSTALLED bank can reject vs what the pack needs, warns with the exact shortfall, and draws the capability map (bank W vs dT) with your design point on it - Setup A territory below the line, B above.
+- Costs in context: stacked system-cost bars and a table for both setups (cells, electronics + assembly, enclosure, dielectric oil, cooling), with the oil verdict computed (share of system, game-changer judgement, and the note that the bill is identical in both setups), the A-vs-B delta as a percentage of system, and the chosen setup stated with its reasons. One click downloads a markdown decision summary for the report. Honesty notes on prototype-vs-volume pricing and on replacing the CB film with the FEA film-law measurement once the pipes rung reports.
+- Smoke: CB at 30 mm/s in ester = 199 W/m2K (Re 7.5, Pr 507) within the physical band, bank capability and tube-need formulas, verdict flip A/B, oil-share band, and the md export - all asserted.
+
 ## v10.28
 
 The pack solved on real 6.4 - and the one failing step is rebuilt through the sanctioned route.
